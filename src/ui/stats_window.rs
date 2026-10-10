@@ -14,13 +14,19 @@ use crate::store::Report;
 
 pub const RANGES: [i64; 3] = [7, 30, 90];
 const W: f64 = 920.0;
-const H: f64 = 880.0;
+/// Full height of the content; the window is this tall when the screen
+/// allows, and scrolls otherwise.
+const CONTENT_H: f64 = 986.0;
 const M: f64 = 24.0;
 const GAP: f64 = 16.0;
 
 pub struct StatsWindow {
     pub window: Retained<NSWindow>,
     range: Retained<NSSegmentedControl>,
+    device: Retained<objc2_app_kit::NSPopUpButton>,
+    /// Device keys behind the popup entries after "All devices".
+    device_keys: Vec<String>,
+    devices: Retained<ChartView>,
     tiles: Vec<Retained<ChartView>>,
     per_day: Retained<ChartView>,
     per_hour: Retained<ChartView>,
@@ -28,6 +34,10 @@ pub struct StatsWindow {
     apps: Retained<ChartView>,
     pasted: Retained<ChartView>,
     icons: IconCache,
+}
+
+pub fn device_label(name: &str) -> String {
+    if name.is_empty() { "Unknown device".into() } else { name.to_string() }
 }
 
 fn tile(label: &str, value: String, note: String) -> Content {
@@ -40,11 +50,13 @@ fn plural(n: i64, one: &str, many: &str) -> String {
 
 impl StatsWindow {
     pub fn new(target: &AnyObject, mtm: MainThreadMarker) -> StatsWindow {
+        let visible = objc2_app_kit::NSScreen::mainScreen(mtm).map(|s| s.visibleFrame().size.height).unwrap_or(900.0);
+        let h = CONTENT_H.min(visible - 40.0).max(500.0);
         // SAFETY: standard window creation; the window is kept alive by `StatsWindow`.
         let window = unsafe {
             NSWindow::initWithContentRect_styleMask_backing_defer(
                 NSWindow::alloc(mtm),
-                rect(0.0, 0.0, W, H),
+                rect(0.0, 0.0, W, h),
                 NSWindowStyleMask::Titled | NSWindowStyleMask::Closable | NSWindowStyleMask::Miniaturizable,
                 NSBackingStoreType::Buffered,
                 false,
@@ -53,8 +65,12 @@ impl StatsWindow {
         // SAFETY: owned by `StatsWindow`.
         unsafe { window.setReleasedWhenClosed(false) };
         window.setTitle(&ns("Pasted Statistics"));
-        let plane = ChartView::new(Content::Plane, rect(0.0, 0.0, W, H), mtm);
-        window.setContentView(Some(&plane));
+        let plane = ChartView::new(Content::Plane, rect(0.0, 0.0, W, CONTENT_H), mtm);
+        let scroll =
+            objc2_app_kit::NSScrollView::initWithFrame(objc2_app_kit::NSScrollView::alloc(mtm), rect(0.0, 0.0, W, h));
+        scroll.setHasVerticalScroller(true);
+        scroll.setDocumentView(Some(&plane));
+        window.setContentView(Some(&scroll));
 
         let title = super::label("Statistics", 20.0, true, mtm);
         title.setFrame(rect(M, 18.0, 300.0, 28.0));
@@ -73,6 +89,18 @@ impl StatsWindow {
         range.setSelectedSegment(1);
         range.setFrame(rect(W - M - 260.0, 20.0, 260.0, 24.0));
         plane.addSubview(&range);
+        let device = objc2_app_kit::NSPopUpButton::initWithFrame_pullsDown(
+            objc2_app_kit::NSPopUpButton::alloc(mtm),
+            rect(W - M - 260.0 - 12.0 - 200.0, 19.0, 200.0, 26.0),
+            false,
+        );
+        device.addItemWithTitle(&ns("All devices"));
+        // SAFETY: the target implements `statsRange:`.
+        unsafe {
+            device.setTarget(Some(target));
+            device.setAction(Some(sel!(statsRange:)));
+        }
+        plane.addSubview(&device);
 
         let empty = || Content::Tile { label: String::new(), value: String::new(), note: String::new() };
         let tile_w = (W - 2.0 * M - 3.0 * 12.0) / 4.0;
@@ -89,13 +117,50 @@ impl StatsWindow {
             plane.addSubview(&v);
             v
         };
-        let per_day = mk(M, 164.0, W - 2.0 * M, 220.0);
-        let per_hour = mk(M, 400.0, half, 220.0);
-        let kinds = mk(M + half + GAP, 400.0, half, 220.0);
-        let apps = mk(M, 636.0, half, 220.0);
-        let pasted = mk(M + half + GAP, 636.0, half, 220.0);
+        let per_day = mk(M, 164.0, W - 2.0 * M, 200.0);
+        let per_hour = mk(M, 380.0, half, 200.0);
+        let kinds = mk(M + half + GAP, 380.0, half, 200.0);
+        let apps = mk(M, 596.0, half, 200.0);
+        let pasted = mk(M + half + GAP, 596.0, half, 200.0);
+        let devices = mk(M, 812.0, W - 2.0 * M, 150.0);
         window.center();
-        StatsWindow { window, range, tiles, per_day, per_hour, kinds, apps, pasted, icons: IconCache::default() }
+        StatsWindow {
+            window,
+            range,
+            device,
+            device_keys: Vec::new(),
+            devices,
+            tiles,
+            per_day,
+            per_hour,
+            kinds,
+            apps,
+            pasted,
+            icons: IconCache::default(),
+        }
+    }
+
+    /// The selected device, or `None` for all devices ("" is unknown).
+    pub fn device(&self) -> Option<String> {
+        let i = self.device.indexOfSelectedItem();
+        (i > 0).then(|| self.device_keys.get(i as usize - 1).cloned()).flatten()
+    }
+
+    /// Refills the device menu, keeping the current choice when it still exists.
+    pub fn set_device_names(&mut self, names: &[(String, i64)]) {
+        let keys: Vec<String> = names.iter().map(|(n, _)| n.clone()).collect();
+        if keys == self.device_keys {
+            return;
+        }
+        let current = self.device();
+        self.device.removeAllItems();
+        self.device.addItemWithTitle(&ns("All devices"));
+        for (name, _) in names {
+            self.device.addItemWithTitle(&ns(&device_label(name)));
+        }
+        self.device_keys = keys;
+        let index = current.and_then(|c| self.device_keys.iter().position(|k| *k == c)).map_or(0, |i| i + 1);
+        self.device.selectItemAtIndex(index as isize);
     }
 
     pub fn days(&self) -> i64 {
@@ -193,6 +258,7 @@ impl StatsWindow {
             subtitle: format!("Last {days} days"),
             rows,
             empty: "Nothing copied in this period".into(),
+            value_width: 52.0,
         });
 
         // Six apps fit; the rest fold into "Other apps".
@@ -225,6 +291,7 @@ impl StatsWindow {
             subtitle: format!("Top apps, last {days} days"),
             rows,
             empty: "Nothing copied in this period".into(),
+            value_width: 52.0,
         });
 
         let rows = r
@@ -243,6 +310,39 @@ impl StatsWindow {
             subtitle: "All time, pasted from Pasted".into(),
             rows,
             empty: "Nothing pasted from Pasted yet".into(),
+            value_width: 52.0,
+        });
+
+        let total: i64 = r.devices.iter().map(|d| d.items).sum::<i64>().max(1);
+        let now = crate::model::now_ms();
+        let rows = r
+            .devices
+            .iter()
+            .map(|d| {
+                let pct = d.items as f64 / total as f64 * 100.0;
+                let mut detail = format!("{} ({pct:.0}%)", compact(d.items as f64));
+                if let Some(app) = &d.top_app {
+                    detail.push_str(&format!(", mostly {app}"));
+                }
+                detail.push_str(&format!(", last copy {}", crate::model::relative_time(d.last_copy.min(now))));
+                Row {
+                    label: device_label(&d.name),
+                    value: d.items as f64,
+                    tooltip: format!("{}: {detail}", device_label(&d.name)),
+                    value_text: detail,
+                    icon: None,
+                }
+            })
+            .collect();
+        self.devices.set_content(Content::Rows {
+            title: "Devices".into(),
+            subtitle: format!(
+                "Items added per device, last {days} days{}",
+                if r.device.is_some() { " (all devices, regardless of the filter)" } else { "" }
+            ),
+            rows,
+            empty: "Nothing copied in this period".into(),
+            value_width: 360.0,
         });
     }
 }

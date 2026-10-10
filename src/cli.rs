@@ -130,6 +130,9 @@ pub enum Command {
         /// Days to summarize.
         #[arg(long, default_value_t = 30)]
         days: i64,
+        /// Only items copied on this device (see the device list in the output).
+        #[arg(long)]
+        device: Option<String>,
     },
     /// Print data file locations.
     Paths,
@@ -542,13 +545,34 @@ pub fn run(command: Command) -> Result<()> {
                     .postNotificationName_object_userInfo_deliverImmediately(&name, None, None, true)
             };
         }
-        Command::Stats { days, .. } => {
-            let r = store.report(days, now_ms())?;
+        Command::Stats { days, device, .. } => {
+            let device = device.map(|d| if d.eq_ignore_ascii_case("unknown") { String::new() } else { d });
+            if let Some(d) = &device
+                && !store.device_names()?.iter().any(|(n, _)| n == d)
+            {
+                bail!("no items from a device named {d:?}");
+            }
+            let r = store.report(days, now_ms(), device.as_deref())?;
+            if let Some(d) = &device {
+                println!("Device: {}", crate::ui::stats_window::device_label(d));
+            }
             println!("Added in the last {days} days: {} ({} in the {days} days before)", r.added, r.added_previous);
             println!("Pasted with Pasted (all time): {}", r.pastes);
             let busiest = r.per_day.iter().max_by_key(|(_, n)| *n).filter(|(_, n)| *n > 0);
             if let Some((d, n)) = busiest {
                 println!("Busiest day: {} ({n} items)", d.format("%a %b %-d"));
+            }
+            if !r.devices.is_empty() {
+                println!("Devices (last {days} days):");
+                for d in &r.devices {
+                    println!(
+                        "  {:<24} {:>5}  last copy {}{}",
+                        crate::ui::stats_window::device_label(&d.name),
+                        d.items,
+                        relative_time(d.last_copy),
+                        d.top_app.as_ref().map(|a| format!(", mostly {a}")).unwrap_or_default()
+                    );
+                }
             }
             let s = store.stats()?;
             println!("Items: {} ({} in history)", s.items, s.history_items);

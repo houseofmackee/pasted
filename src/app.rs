@@ -624,7 +624,10 @@ impl App {
 
     fn refresh_stats(&mut self) {
         let Some(win) = &mut self.stats_window else { return };
-        match self.store.report(win.days(), now_ms()) {
+        if let Ok(names) = self.store.device_names() {
+            win.set_device_names(&names);
+        }
+        match self.store.report(win.days(), now_ms(), win.device().as_deref()) {
             Ok(report) => win.update(&report),
             Err(e) => tracing::error!("statistics failed: {e:#}"),
         }

@@ -109,6 +109,8 @@ pub enum Content {
         subtitle: String,
         rows: Vec<Row>,
         empty: String,
+        /// Width reserved for the value text after each bar.
+        value_width: f64,
     },
 }
 
@@ -386,7 +388,7 @@ impl ChartView {
                 }
                 self.set_tooltips(tips);
             }
-            Content::Rows { title, subtitle, rows, empty } => {
+            Content::Rows { title, subtitle, rows, empty, value_width } => {
                 let b = self.panel(&p);
                 let w = b.size.width;
                 self.header(&p, &title, &subtitle, w);
@@ -405,7 +407,7 @@ impl ChartView {
                 let label_x = if has_icons { 40.0 } else { 16.0 };
                 let label_w = 128.0;
                 let bar_x = label_x + label_w + 8.0;
-                let value_w = 52.0;
+                let value_w = value_width;
                 let bar_max = (w - bar_x - value_w - 16.0).max(10.0);
                 let max = rows.iter().map(|r| r.value).fold(0.0, f64::max).max(1.0);
                 // Rows shrink a little to fit the panel; callers fold long tails into "Other".

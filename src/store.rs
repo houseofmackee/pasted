@@ -144,6 +144,8 @@ pub struct Stats {
 #[derive(Debug, Default)]
 pub struct Report {
     pub days: i64,
+    /// The device the numbers are limited to, if any ("" for unknown).
+    pub device: Option<String>,
     /// One entry per local day, oldest first, including empty days.
     pub per_day: Vec<(chrono::NaiveDate, i64)>,
     /// Items added per local hour of day.
@@ -160,6 +162,17 @@ pub struct Report {
     pub history_items: i64,
     pub pinboards: i64,
     pub bytes: i64,
+    /// Items per device in the range, most first (never device-filtered).
+    pub devices: Vec<DeviceStats>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceStats {
+    /// "" when the device is unknown.
+    pub name: String,
+    pub items: i64,
+    pub last_copy: i64,
+    pub top_app: Option<String>,
 }
 
 /// Everything about an item except its representations, for export.
@@ -978,8 +991,11 @@ impl Store {
         })
     }
 
-    pub fn report(&self, days: i64, now: i64) -> Result<Report> {
+    /// Statistics over the last `days` days. With `device`, every number is
+    /// limited to items copied on that device ("" means unknown device).
+    pub fn report(&self, days: i64, now: i64, device: Option<&str>) -> Result<Report> {
         use chrono::{Local, TimeZone};
+        use rusqlite::named_params;
         let days = days.max(1);
         let today = Local
             .timestamp_millis_opt(now)
@@ -992,13 +1008,18 @@ impl Store {
         };
         let since = midnight(first).unwrap_or(now - days * 86_400_000);
         let prev_since = midnight(first - chrono::Duration::days(days)).unwrap_or(since - days * 86_400_000);
+        // Every query below filters on this; NULL means all devices.
+        const DEV: &str = "(:dev IS NULL OR coalesce(i.device, '') = :dev)";
 
         let mut counts = std::collections::HashMap::new();
-        let mut stmt = self.conn.prepare(
-            "SELECT date(created_at / 1000, 'unixepoch', 'localtime'), count(*) FROM items
-             WHERE created_at >= ?1 GROUP BY 1",
-        )?;
-        for row in stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT date(i.created_at / 1000, 'unixepoch', 'localtime'), count(*) FROM items i
+             WHERE i.created_at >= :since AND {DEV} GROUP BY 1"
+        ))?;
+        let rows = stmt.query_map(named_params! { ":since": since, ":dev": device }, |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
             let (day, n) = row?;
             if let Ok(d) = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d") {
                 counts.insert(d, n);
@@ -1008,46 +1029,77 @@ impl Store {
             (0..days).map(|i| first + chrono::Duration::days(i)).map(|d| (d, *counts.get(&d).unwrap_or(&0))).collect();
 
         let mut per_hour = [0i64; 24];
-        let mut stmt = self.conn.prepare(
-            "SELECT CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER), count(*)
-             FROM items WHERE created_at >= ?1 GROUP BY 1",
-        )?;
-        for row in stmt.query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT CAST(strftime('%H', i.created_at / 1000, 'unixepoch', 'localtime') AS INTEGER), count(*)
+             FROM items i WHERE i.created_at >= :since AND {DEV} GROUP BY 1"
+        ))?;
+        let rows = stmt.query_map(named_params! { ":since": since, ":dev": device }, |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
             let (h, n) = row?;
             if (0..24).contains(&h) {
                 per_hour[h as usize] = n;
             }
         }
 
-        let pairs = |sql: &str, arg: i64| -> Result<Vec<(String, i64)>> {
-            let mut stmt = self.conn.prepare(sql)?;
-            let rows = stmt.query_map([arg], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            Ok(rows.collect::<rusqlite::Result<_>>()?)
-        };
-        let by_kind =
-            pairs("SELECT kind, count(*) FROM items WHERE created_at >= ?1 GROUP BY kind ORDER BY 2 DESC", since)?;
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT i.kind, count(*) FROM items i WHERE i.created_at >= :since AND {DEV}
+             GROUP BY i.kind ORDER BY 2 DESC"
+        ))?;
+        let by_kind = stmt
+            .query_map(named_params! { ":since": since, ":dev": device }, |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT a.bundle_id, coalesce(a.name, a.bundle_id), count(*) FROM items i JOIN apps a ON a.id = i.app_id
-             WHERE i.created_at >= ?1 GROUP BY a.id ORDER BY 3 DESC LIMIT 8",
-        )?;
-        let top_apps =
-            stmt.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+             WHERE i.created_at >= :since AND {DEV} GROUP BY a.id ORDER BY 3 DESC LIMIT 8"
+        ))?;
+        let top_apps = stmt
+            .query_map(named_params! { ":since": since, ":dev": device }, |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
 
-        let one = |sql: &str, args: &[i64]| -> Result<i64> {
-            Ok(self.conn.query_row(sql, params_from_iter(args.iter()), |r| r.get(0))?)
+        let count = |sql: &str, from: i64, to: i64| -> Result<i64> {
+            Ok(self.conn.query_row(
+                &format!("SELECT {sql} FROM items i WHERE i.created_at >= :from AND i.created_at < :to AND {DEV}"),
+                named_params! { ":from": from, ":to": to, ":dev": device },
+                |r| r.get(0),
+            )?)
         };
-        let added = one("SELECT count(*) FROM items WHERE created_at >= ?1", &[since])?;
-        let added_previous =
-            one("SELECT count(*) FROM items WHERE created_at >= ?1 AND created_at < ?2", &[prev_since, since])?;
+        let added = count("count(*)", since, i64::MAX)?;
+        let added_previous = count("count(*)", prev_since, since)?;
+        let pastes = count("coalesce(sum(i.use_count), 0)", i64::MIN, i64::MAX)?;
+        let bytes = count("coalesce(sum(i.size_bytes), 0)", i64::MIN, i64::MAX)?;
+        let history_items: i64 = self.conn.query_row(
+            &format!("SELECT count(*) FROM items i WHERE i.in_history = 1 AND {DEV}"),
+            named_params! { ":dev": device },
+            |r| r.get(0),
+        )?;
         let sql = format!(
             "SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN apps a ON a.id = i.app_id
-             WHERE i.use_count > 0 ORDER BY i.use_count DESC, i.last_used_at DESC LIMIT 8"
+             WHERE i.use_count > 0 AND i.sensitive = 0 AND {DEV}
+             ORDER BY i.use_count DESC, i.last_used_at DESC LIMIT 8"
         );
         let mut stmt = self.conn.prepare(&sql)?;
-        let most_pasted = stmt.query_map([], item_from_row)?.collect::<rusqlite::Result<_>>()?;
-        let stats = self.stats()?;
+        let most_pasted =
+            stmt.query_map(named_params! { ":dev": device }, item_from_row)?.collect::<rusqlite::Result<_>>()?;
+
+        // The per-device breakdown is never filtered by device.
+        let mut stmt = self.conn.prepare(
+            "SELECT coalesce(i.device, ''), count(*), max(i.timestamp),
+                    (SELECT coalesce(a.name, a.bundle_id) FROM items j JOIN apps a ON a.id = j.app_id
+                     WHERE coalesce(j.device, '') = coalesce(i.device, '') AND j.created_at >= :since
+                     GROUP BY a.id ORDER BY count(*) DESC LIMIT 1)
+             FROM items i WHERE i.created_at >= :since GROUP BY 1 ORDER BY 2 DESC",
+        )?;
+        let devices = stmt
+            .query_map(named_params! { ":since": since }, |r| {
+                Ok(DeviceStats { name: r.get(0)?, items: r.get(1)?, last_copy: r.get(2)?, top_app: r.get(3)? })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+
         Ok(Report {
             days,
+            device: device.map(str::to_string),
             per_day,
             per_hour,
             by_kind,
@@ -1055,11 +1107,20 @@ impl Store {
             added,
             added_previous,
             most_pasted,
-            pastes: one("SELECT coalesce(sum(use_count), 0) FROM items", &[])?,
-            history_items: stats.history_items,
-            pinboards: stats.pinboards,
-            bytes: stats.bytes,
+            pastes,
+            history_items,
+            pinboards: self.stats()?.pinboards,
+            bytes,
+            devices,
         })
+    }
+
+    /// Every device name ever recorded ("" for unknown), most items first.
+    pub fn device_names(&self) -> Result<Vec<(String, i64)>> {
+        let mut stmt =
+            self.conn.prepare("SELECT coalesce(device, ''), count(*) FROM items GROUP BY 1 ORDER BY 2 DESC")?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// All items, newest first, for export.
@@ -1383,7 +1444,7 @@ pub mod tests {
         s.mark_used(pasted).unwrap();
         s.mark_used(pasted).unwrap();
 
-        let r = s.report(7, now).unwrap();
+        let r = s.report(7, now, None).unwrap();
         assert_eq!(r.per_day.len(), 7);
         assert_eq!(r.per_day.last().unwrap(), &(chrono::NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(), 2));
         assert_eq!(r.per_day[4].1, 1, "Oct 8");
@@ -1452,6 +1513,33 @@ pub mod tests {
         // Exact first, then close matches, without duplicates.
         let (items, _, fuzzy) = s.search_with_fuzzy(&Query::parse("roadmp"), 10, 0, true).unwrap();
         assert_eq!((items.len(), fuzzy), (2, 2));
+    }
+
+    #[test]
+    fn report_per_device() {
+        let (_d, mut s) = temp_store();
+        let now = now_ms();
+        let on = |text: &str, device: Option<&str>| {
+            let mut item = text_item(text, now - 1_000);
+            item.device = device.map(str::to_string);
+            item
+        };
+        s.insert(&on("a", Some("MacBook Pro")), true).unwrap();
+        s.insert(&on("b", Some("MacBook Pro")), true).unwrap();
+        s.insert(&on("c", Some("Mac mini")), true).unwrap();
+        s.insert(&on("d", None), true).unwrap();
+        let all = s.report(7, now, None).unwrap();
+        assert_eq!(all.added, 4);
+        let names: Vec<_> = all.devices.iter().map(|d| (d.name.as_str(), d.items)).collect();
+        assert_eq!(names[0], ("MacBook Pro", 2));
+        assert!(names.contains(&("", 1)) && names.contains(&("Mac mini", 1)));
+        assert_eq!(all.devices[0].top_app.as_deref(), Some("Safari"));
+        let pro = s.report(7, now, Some("MacBook Pro")).unwrap();
+        assert_eq!((pro.added, pro.history_items), (2, 2));
+        assert_eq!(pro.devices.len(), 3, "the breakdown always lists every device");
+        let unknown = s.report(7, now, Some("")).unwrap();
+        assert_eq!(unknown.added, 1);
+        assert_eq!(s.device_names().unwrap()[0], ("MacBook Pro".to_string(), 2));
     }
 
     #[test]
