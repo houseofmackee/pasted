@@ -1,34 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-compile_error!("pasted only supports macOS");
-
-mod app;
-mod cli;
-mod clipboard;
-mod encryption;
-mod export;
-mod fuzzy;
-mod hotkeys;
-mod import;
-mod link_preview;
-mod login_item;
-mod mcp;
-mod model;
-mod ocr;
-mod paste;
-mod paths;
-mod rich;
-mod rules;
-mod search;
-mod settings;
-mod shortcut;
-mod snippet;
-mod stack;
-mod stats_data;
-mod store;
-mod transform;
-mod ui;
-
 use clap::Parser;
+use pasted::{app, cli};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()

@@ -189,15 +189,14 @@ Done:
 - **Accessibility**: welcome window on first launch and from the menu (shortcut, live Accessibility status with a deep link, Paste import; replaces the automatic import prompt), also shown the first time a paste needs permission; cards are single VoiceOver buttons with a spoken description (type, title, app, age, content, expiry, position; sensitive items never read out) and selection, results and panels are announced; labelled search field and tabs; Reduce Motion turns off window animations; Increase Contrast adds card borders.
 - **Statistics table**: Charts or Table view in the Statistics window (every chart's exact values in selectable, aligned tables; all apps rather than the top six), Copy Data puts tab-separated text and HTML tables on the clipboard for spreadsheets and documents (not added to history), `pasted stats --tsv`; sensitive items stay hidden.
 - **App icon**: stacked shelf cards on a blue-violet tile, drawn on the macOS icon grid; SVG source with `scripts/make_icon.sh` to rebuild the `.icns`; used by `Pasted.app` and built into the binary so dialogs show it when running from a terminal.
+- **Testing**: the crate is now a library plus a thin binary, so tests and benchmarks can reach the code. Pasteboard integration tests on private pasteboards (plain, rich, multi-item, image, concealed, patterns, size limit, store and write back exactly, duplicate copies); card layout snapshot test on the main thread (12 kinds, every subview's frame and text, checks that nothing spills outside the card and sensitive text never shows); criterion benchmarks (one insert into 10k history about 0.37 ms, 10k batch import about 1 s, all 7 shelf searches at 100k items within 20 ms, 0.2 to 18.6 ms); `docs/RELEASE_CHECKLIST.md` for full-screen apps, displays, Spaces, Stage Manager, secure input, install and accessibility.
 - **Phase 6**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`; `scripts/make_dmg.sh` builds `dist/Pasted-<version>-arm64.dmg` for direct download (built-in `hdiutil` only, LZMA compressed, app plus Applications link plus "Read Me First.txt" on opening an unnotarized app), refuses non-arm64 binaries, mounts the result to verify the signature, architecture and layout, and writes a SHA-256 file. Notarization and Sparkle stay deferred.
 
 Next:
 
-Testing
-- Capture and write-back integration tests against a private named pasteboard.
-- Snapshot tests for card layout metrics.
-- Benchmarks (`criterion`): 10k inserts; FTS search under 20 ms at 100k items.
-- Manual release checklist: full-screen apps, multiple displays, Spaces, Stage Manager, secure input fields.
+Nothing scheduled. Candidates:
+- Store only one plain text encoding: macOS adds a UTF-16 copy of the plain text to rich text copies, and Pasted stores it (found by the pasteboard tests). Dropping it needs the duplicate check to treat old and new items alike.
+- Search headroom: common-word queries take about 18 ms of the 20 ms budget at 100k items.
 
 Known limitations:
 

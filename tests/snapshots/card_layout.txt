@@ -1,0 +1,127 @@
+# Card layout snapshot (232x248); regenerate with UPDATE_SNAPSHOTS=1
+
+[short text]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Text"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "Hello"
+  NSTextField 12.0,6.0 174.0x16.0 "5 characters"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘1"
+
+[long text]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Text"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "The quarterly roadmap review moved to Thursday. "
+  NSTextField 12.0,6.0 174.0x16.0 "176 characters"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘2"
+
+[titled text]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Meeting notes"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "The quarterly roadmap review moved to Thursday. "
+  NSTextField 12.0,6.0 174.0x16.0 "176 characters"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘3"
+
+[close match]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Text"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "Quarterly roadmap review"
+  NSTextField 12.0,6.0 174.0x16.0 "≈ Close match · 24 characters"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘4"
+
+[code]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Code"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "fn main() {\\n    let mut total = 0;\\n    println"
+  NSTextField 12.0,6.0 174.0x16.0 "rust · 4 lines"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘5"
+
+[link]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Link"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "https://github.com/rust-lang/rust"
+  NSTextField 12.0,6.0 174.0x16.0 "github.com"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘6"
+
+[link with preview]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Link"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,169.0 208.0x17.0 "Rust Programming Language"
+  NSTextField 12.0,26.0 208.0x139.0 "https://www.rust-lang.org/"
+  NSTextField 12.0,6.0 174.0x16.0 "www.rust-lang.org"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘7"
+
+[color]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Color"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSView 12.0,70.0 208.0x110.0
+  NSTextField 12.0,36.0 208.0x22.0 "#3B2DB5"
+  NSTextField 12.0,6.0 174.0x16.0 "Color"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘8"
+
+[files]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "File"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSImageView 12.0,82.0 208.0x100.0
+    _NSImageViewSimpleImageView 54.0,0.0 100.0x100.0
+  NSTextField 12.0,26.0 208.0x50.0 "Report.pdf\\nNotes.txt"
+  NSTextField 12.0,6.0 174.0x16.0 "2 files"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘9"
+
+[image]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Image"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSImageView 12.0,26.0 208.0x160.0
+    _NSImageViewSimpleImageView 24.0,0.0 160.0x160.0
+  NSTextField 12.0,6.0 174.0x16.0 "1 × 1"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘1"
+
+[rich text]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "Rich Text"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,26.0 208.0x160.0 "Release notes\\n\\nFaster search"
+  NSTextField 12.0,6.0 174.0x16.0 "28 characters"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘2"
+
+[sensitive]
+  NSView 0.0,194.0 232.0x54.0
+    NSTextField 12.0,24.0 164.0x20.0 "🔒 Sensitive"
+    NSTextField 12.0,7.0 164.0x16.0 "just now"
+    NSImageView 186.0,7.0 40.0x40.0
+      _NSImageViewSimpleImageView 4.0,4.0 32.0x32.0
+  NSTextField 12.0,126.0 208.0x30.0 "••••••••••••"
+  NSTextField 12.0,76.0 208.0x40.0 "Hidden. Press Space or ⌘Y to show it."
+  NSTextField 12.0,6.0 174.0x16.0 "Hidden"
+  NSTextField 188.0,6.0 32.0x16.0 "⌘3"

@@ -6,6 +6,9 @@ description = "A fast, private clipboard manager for macOS"
 license = "MIT OR Apache-2.0"
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "pasted"
 path = "src/main.rs"
@@ -54,3 +57,14 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 lto = "thin"
 codegen-units = 1
 strip = true
+
+[[test]]
+name = "card_layout"
+harness = false
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "store"
+harness = false
