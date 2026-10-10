@@ -137,6 +137,8 @@ pub struct Item {
     pub timestamp: i64,
     pub use_count: i64,
     pub size_bytes: i64,
+    /// Unix ms when a rule will remove this item from history.
+    pub expires_at: Option<i64>,
 }
 
 impl Item {

@@ -39,6 +39,9 @@ pub const OPEN_ACCESSIBILITY: u8 = 62;
 pub const RESTORE_SHORTCUTS: u8 = 63;
 pub const SAVE_PATTERNS: u8 = 64;
 pub const OPEN_DATA_FOLDER: u8 = 65;
+pub const ADD_RULE: u8 = 66;
+pub const EDIT_RULE: u8 = 67;
+pub const REMOVE_RULE: u8 = 68;
 
 pub struct RecorderIvars {
     shortcut: Cell<Option<Shortcut>>,
@@ -266,6 +269,9 @@ pub struct SettingsWindow {
     visible_sharing: Retained<NSButton>,
     apps_table: Retained<NSTableView>,
     apps: Retained<AppsDataSource>,
+    rules_table: Retained<NSTableView>,
+    rules_source: Retained<AppsDataSource>,
+    rules_status: Retained<NSTextField>,
     patterns: Retained<NSTextView>,
     patterns_status: Retained<NSTextField>,
     stats: Retained<NSTextField>,
@@ -565,6 +571,54 @@ impl SettingsWindow {
         f.add(&patterns_status);
         add_tab("Privacy", &f.view);
 
+        // Rules
+        let mut f = Form::new(mtm);
+        let rules_source = AppsDataSource::new(mtm);
+        let rules_table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, 520.0, 160.0));
+        let column = NSTableColumn::initWithIdentifier(NSTableColumn::alloc(mtm), &ns("rule"));
+        column.setWidth(510.0);
+        rules_table.addTableColumn(&column);
+        rules_table.setHeaderView(None);
+        rules_table.setTag(tag(EDIT_RULE, 0));
+        // SAFETY: the data source is retained by `SettingsWindow`; the target implements `tableAction:`.
+        unsafe {
+            rules_table.setDataSource(Some(ProtocolObject::from_ref(&*rules_source)));
+            rules_table.setTarget(Some(target));
+            rules_table.setDoubleAction(Some(sel!(tableAction:)));
+        }
+        let rules_scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0.0, 0.0, 540.0, 170.0));
+        rules_scroll.setDocumentView(Some(&rules_table));
+        rules_scroll.setHasVerticalScroller(true);
+        rules_scroll.setBorderType(objc2_app_kit::NSBorderType::BezelBorder);
+        f.y += 10.0;
+        let y = f.row("", 170.0);
+        rules_scroll.setFrame(rect(20.0, y, W - 80.0, 170.0));
+        f.add(&rules_scroll);
+        let y = f.row("", 30.0);
+        let mut bx = 14.0;
+        for (title, code) in [("Add Rule\u{2026}", ADD_RULE), ("Edit\u{2026}", EDIT_RULE), ("Remove", REMOVE_RULE)] {
+            let b = button(title, tag(code, 0), target, mtm);
+            if code == ADD_RULE {
+                b.setKeyEquivalent(&ns("n"));
+                b.setKeyEquivalentModifierMask(objc2_app_kit::NSEventModifierFlags::Command);
+            }
+            b.setFrame(rect(bx, y, b.frame().size.width, 30.0));
+            bx += b.frame().size.width + 4.0;
+            f.add(&b);
+        }
+        let rules_status = wrapping_label("", &NSFont::systemFontOfSize(12.0), 3, mtm);
+        rules_status.setTextColor(Some(&NSColor::systemRedColor()));
+        let y = f.row("", 34.0);
+        rules_status.setFrame(rect(20.0, y, W - 80.0, 34.0));
+        f.add(&rules_status);
+        f.note(
+            "Rules run on every new copy. Conditions that are left empty match everything. Items removed by a rule \
+             leave history only; pinned items never expire. Rules can also be written in the settings file as \
+             [[rules]] entries.",
+            20.0,
+        );
+        add_tab("Rules", &f.view);
+
         // Data
         let mut f = Form::new(mtm);
         let stats = label("", 13.0, false, mtm);
@@ -646,6 +700,9 @@ impl SettingsWindow {
             visible_sharing,
             apps_table,
             apps,
+            rules_table,
+            rules_source,
+            rules_status,
             patterns,
             patterns_status,
             stats,
@@ -665,8 +722,9 @@ impl SettingsWindow {
 
     /// Selects a tab by its (case-insensitive) label.
     pub fn select_tab(&self, name: &str) {
-        let index =
-            ["general", "pasting", "shortcuts", "privacy", "data"].iter().position(|t| t.eq_ignore_ascii_case(name));
+        let index = ["general", "pasting", "shortcuts", "privacy", "rules", "data"]
+            .iter()
+            .position(|t| t.eq_ignore_ascii_case(name));
         if let Some(i) = index {
             self.tabs.selectTabViewItemAtIndex(i as isize);
         }
@@ -700,6 +758,30 @@ impl SettingsWindow {
         set_checked(&self.skip_secrets, im.skip_secrets);
         set_checked(&self.skip_ignore_patterns, im.skip_ignore_patterns);
         set_checked(&self.skip_password_mentions, im.skip_password_mentions);
+        *self.rules_source.ivars().borrow_mut() = s
+            .rules
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let name = if r.name.is_empty() { format!("Rule {}", i + 1) } else { r.name.clone() };
+                let state = match (r.enabled, r.validate()) {
+                    (false, _) => " (off)",
+                    (true, Err(_)) => " (invalid)",
+                    _ => "",
+                };
+                let row = format!("{name}{state}: {}", r.summary());
+                (row.clone(), row)
+            })
+            .collect();
+        self.rules_table.reloadData();
+        let problems: Vec<String> = s
+            .rules
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.enabled)
+            .filter_map(|(i, r)| r.validate().err().map(|e| format!("Rule {}: {e}", i + 1)))
+            .collect();
+        self.rules_status.setStringValue(&ns(&problems.join("\n")));
         *self.apps.ivars().borrow_mut() = p.excluded_apps.iter().map(|id| (app_name(id), id.clone())).collect();
         self.apps_table.reloadData();
         self.patterns.setString(&ns(&p.ignore_patterns.join("\n")));
@@ -766,6 +848,11 @@ impl SettingsWindow {
         self.patterns_status.setStringValue(&ns(text));
         let color = if error { NSColor::systemRedColor() } else { NSColor::secondaryLabelColor() };
         self.patterns_status.setTextColor(Some(&color));
+    }
+
+    pub fn selected_rule_row(&self) -> Option<usize> {
+        let row = self.rules_table.selectedRow();
+        (row >= 0).then_some(row as usize)
     }
 
     pub fn selected_app_row(&self) -> Option<usize> {

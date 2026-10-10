@@ -66,6 +66,11 @@ pub enum Command {
         #[arg(long = "set", value_name = "NAME=VALUE")]
         values: Vec<String>,
     },
+    /// List rules, or test which rules match some text.
+    Rules {
+        #[command(subcommand)]
+        command: Option<RulesCommand>,
+    },
     /// Apply a cleanup to stdin and print the result.
     Transform {
         /// Transform name, for example `clean-links` or `pretty-json`.
@@ -98,6 +103,17 @@ pub enum Command {
     Stats,
     /// Print data file locations.
     Paths,
+}
+
+#[derive(Subcommand)]
+pub enum RulesCommand {
+    /// Show which rules would match a copy of TEXT.
+    Test {
+        text: String,
+        /// Source app bundle identifier or name.
+        #[arg(long)]
+        app: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -143,6 +159,9 @@ fn print_items(items: &[Item], json: bool) -> Result<()> {
     }
     Ok(())
 }
+
+const CLI_BUNDLE_ID: &str = "io.pasted.cli";
+const CLI_APP_NAME: &str = "Command Line";
 
 fn parse_transform(name: &str) -> Result<Transform> {
     Transform::parse(name).with_context(|| format!("unknown transform {name:?}; see `pasted transform --list`"))
@@ -221,27 +240,24 @@ pub fn run(command: Command) -> Result<()> {
             let reps = vec![Representation { index: 0, uti: UTI_PLAIN_TEXT.into(), data: text.into_bytes() }];
             let c = classify(&reps).context("could not classify input")?;
             let now = now_ms();
-            let id = store
-                .insert(
-                    &NewItem {
-                        kind: c.kind,
-                        title: None,
-                        text: c.text,
-                        meta: c.meta,
-                        representations: reps,
-                        source_app: Some(SourceApp {
-                            bundle_id: "io.pasted.cli".into(),
-                            name: Some("Terminal".into()),
-                        }),
-                        device: None,
-                        created_at: now,
-                        timestamp: now,
-                        external_id: None,
-                        in_history: true,
-                    },
-                    true,
-                )?
-                .id();
+            let item = NewItem {
+                kind: c.kind,
+                title: None,
+                text: c.text,
+                meta: c.meta,
+                representations: reps,
+                source_app: Some(SourceApp { bundle_id: CLI_BUNDLE_ID.into(), name: Some(CLI_APP_NAME.into()) }),
+                device: None,
+                created_at: now,
+                timestamp: now,
+                external_id: None,
+                in_history: true,
+            };
+            let id = store.insert(&item, true)?.id();
+            let settings = Settings::load(&crate::paths::settings_path()?)?;
+            let (rules, _) = crate::rules::Rules::new(&settings.rules);
+            let outcome = rules.evaluate(item.kind, &item.text, Some(CLI_BUNDLE_ID), Some(CLI_APP_NAME));
+            store.apply_rules(id, &outcome, now)?;
             println!("{id}");
         }
         Command::Expand { values } => {
@@ -261,6 +277,47 @@ pub fn run(command: Command) -> Result<()> {
                 }
             }
             print!("{}", crate::snippet::expand(&input, &ctx).text);
+        }
+        Command::Rules { command } => {
+            let settings = Settings::load(&crate::paths::settings_path()?)?;
+            match command {
+                None => {
+                    if settings.rules.is_empty() {
+                        println!("No rules. Add [[rules]] to the settings file or use Settings > Rules.");
+                    }
+                    for (i, r) in settings.rules.iter().enumerate() {
+                        let status = match (r.enabled, r.validate()) {
+                            (false, _) => "off".to_string(),
+                            (true, Ok(())) => "on".to_string(),
+                            (true, Err(e)) => format!("error: {e}"),
+                        };
+                        let name = if r.name.is_empty() { format!("Rule {}", i + 1) } else { r.name.clone() };
+                        println!("{name} [{status}]\n    {}", r.summary());
+                    }
+                }
+                Some(RulesCommand::Test { text, app }) => {
+                    let (rules, errors) = crate::rules::Rules::new(&settings.rules);
+                    for e in errors {
+                        eprintln!("skipped {e}");
+                    }
+                    let reps =
+                        vec![Representation { index: 0, uti: UTI_PLAIN_TEXT.into(), data: text.clone().into_bytes() }];
+                    let kind = classify(&reps).map(|c| c.kind).unwrap_or(ItemKind::Text);
+                    let o = rules.evaluate(kind, &text, app.as_deref(), app.as_deref());
+                    if o.matched.is_empty() {
+                        println!("No rules match ({}).", kind.as_str());
+                    } else {
+                        println!("Matches ({}): {}", kind.as_str(), o.matched.join("; "));
+                        if let Some(ms) = o.expire_after_ms {
+                            let note = if o.pin_to.is_empty() { "" } else { " (ignored: pinned items never expire)" };
+                            println!("Expires after {}{note}", crate::rules::format_duration(ms));
+                        }
+                        if !o.pin_to.is_empty() {
+                            println!("Pinned to {}", o.pin_to.join(", "));
+                        }
+                    }
+                }
+            }
         }
         Command::Transform { name, list } => {
             if list || name.is_none() {

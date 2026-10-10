@@ -97,6 +97,10 @@ CREATE TABLE link_previews (
 );
 CREATE INDEX items_link_url ON items(json_extract(meta, '$.url')) WHERE kind = 'link';
 "#,
+    r#"
+ALTER TABLE items ADD COLUMN expires_at INTEGER;
+CREATE INDEX items_expires_at ON items(expires_at) WHERE expires_at IS NOT NULL;
+"#,
 ];
 
 /// Failed link previews are retried after this long.
@@ -170,7 +174,7 @@ fn escape_like(s: &str) -> String {
 }
 
 const ITEM_COLUMNS: &str = "i.id, i.kind, i.title, i.text, i.meta, a.bundle_id, a.name, i.device, \
-     i.created_at, i.timestamp, i.use_count, i.size_bytes";
+     i.created_at, i.timestamp, i.use_count, i.size_bytes, i.expires_at";
 
 fn item_from_row(row: &Row) -> rusqlite::Result<Item> {
     let kind: String = row.get(1)?;
@@ -188,6 +192,7 @@ fn item_from_row(row: &Row) -> rusqlite::Result<Item> {
         timestamp: row.get(9)?,
         use_count: row.get(10)?,
         size_bytes: row.get(11)?,
+        expires_at: row.get(12)?,
     })
 }
 
@@ -675,7 +680,37 @@ impl Store {
              VALUES (?1, ?2, coalesce(?3, (SELECT coalesce(min(sort), 0) - 1 FROM pinboard_items WHERE pinboard_id = ?1)))",
             params![pinboard_id, item_id, sort],
         )?;
+        // Pinned items are kept on purpose; they never expire.
+        self.conn.execute("UPDATE items SET expires_at = NULL WHERE id = ?1", [item_id])?;
         Ok(())
+    }
+
+    /// Applies what matching rules asked for: pin first (which also keeps the
+    /// item), otherwise set the expiry. Returns the pinboards it was pinned to.
+    pub fn apply_rules(&self, item_id: i64, outcome: &crate::rules::Outcome, now: i64) -> Result<Vec<String>> {
+        for name in &outcome.pin_to {
+            let board = match self.pinboard_by_name(name)? {
+                Some(id) => id,
+                None => self.create_pinboard(name, None, None)?,
+            };
+            self.pin(item_id, board, None)?;
+        }
+        if outcome.pin_to.is_empty()
+            && let Some(ms) = outcome.expire_after_ms
+            && self.item_pinboards(item_id)?.is_empty()
+        {
+            self.conn.execute("UPDATE items SET expires_at = ?2 WHERE id = ?1", params![item_id, now + ms])?;
+        }
+        Ok(outcome.pin_to.clone())
+    }
+
+    /// Deletes history items whose rule-based expiry has passed.
+    pub fn expire_due(&self, now: i64) -> Result<usize> {
+        Ok(self.conn.execute(
+            "DELETE FROM items WHERE expires_at IS NOT NULL AND expires_at <= ?1
+             AND id NOT IN (SELECT item_id FROM pinboard_items)",
+            [now],
+        )?)
     }
 
     pub fn unpin(&self, item_id: i64, pinboard_id: i64) -> Result<()> {
@@ -933,6 +968,36 @@ pub mod tests {
         );
         assert!(s.link_preview("https://example.com/b").unwrap().is_none());
         assert!(!s.import_link_preview(&p).unwrap());
+    }
+
+    #[test]
+    fn rule_outcomes_expire_and_pin() {
+        let (_d, mut s) = temp_store();
+        let temp = s.insert(&text_item("temporary", 1_000), true).unwrap().id();
+        let keep = s.insert(&text_item("JIRA-1", 1_000), true).unwrap().id();
+        let expire = crate::rules::Outcome { expire_after_ms: Some(60_000), ..Default::default() };
+        s.apply_rules(temp, &expire, 1_000).unwrap();
+        assert_eq!(s.get(temp).unwrap().unwrap().expires_at, Some(61_000));
+        let pin = crate::rules::Outcome {
+            expire_after_ms: Some(60_000),
+            pin_to: vec!["Tickets".into()],
+            ..Default::default()
+        };
+        assert_eq!(s.apply_rules(keep, &pin, 1_000).unwrap(), ["Tickets"]);
+        assert_eq!(s.get(keep).unwrap().unwrap().expires_at, None);
+        assert_eq!(s.pinboards().unwrap()[0].name, "Tickets");
+
+        assert_eq!(s.expire_due(60_000).unwrap(), 0);
+        assert_eq!(s.expire_due(61_000).unwrap(), 1);
+        assert!(s.get(temp).unwrap().is_none());
+        assert!(s.get(keep).unwrap().is_some());
+
+        // Pinning by hand cancels a pending expiry.
+        let later = s.insert(&text_item("later", 2_000), true).unwrap().id();
+        s.apply_rules(later, &expire, 2_000).unwrap();
+        let board = s.pinboard_by_name("Tickets").unwrap().unwrap();
+        s.pin(later, board, None).unwrap();
+        assert_eq!(s.expire_due(i64::MAX).unwrap(), 0);
     }
 
     #[test]

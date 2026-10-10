@@ -99,6 +99,11 @@ define_class!(
             dispatch(sender.tag());
         }
 
+        #[unsafe(method(tableAction:))]
+        fn table_action(&self, sender: &NSControl) {
+            dispatch(sender.tag());
+        }
+
         #[unsafe(method(buttonAction:))]
         fn button_action(&self, sender: &NSButton) {
             dispatch(sender.tag());
@@ -243,6 +248,10 @@ pub struct App {
     /// notice hand edits.
     settings_mtime: Option<std::time::SystemTime>,
     last_settings_check: Instant,
+    rules: crate::rules::Rules,
+    /// Problems with rules from settings, shown in the Rules tab.
+    rule_errors: Vec<String>,
+    last_expiry_check: Instant,
 }
 
 thread_local! {
@@ -356,6 +365,9 @@ pub fn run() -> Result<()> {
         settings_window: None,
         settings_mtime: settings_mtime(),
         last_settings_check: Instant::now(),
+        rules: crate::rules::Rules::new(&[]).0,
+        rule_errors: Vec::new(),
+        last_expiry_check: Instant::now() - Duration::from_secs(60),
         store,
         settings,
         status_item,
@@ -450,7 +462,56 @@ fn install_main_menu(mtm: MainThreadMarker) {
 }
 
 impl App {
+    fn apply_rules(&mut self, id: i64, item: &crate::model::NewItem) {
+        if self.rules.is_empty() {
+            return;
+        }
+        let app = item.source_app.as_ref();
+        let outcome = self.rules.evaluate(
+            item.kind,
+            &item.text,
+            app.map(|a| a.bundle_id.as_str()),
+            app.and_then(|a| a.name.as_deref()),
+        );
+        if outcome.matched.is_empty() {
+            return;
+        }
+        tracing::debug!("rules matched item {id}: {:?}", outcome.matched);
+        match self.store.apply_rules(id, &outcome, now_ms()) {
+            Ok(pinned) if !pinned.is_empty() && self.shelf.is_visible() => self.shelf.reload_tabs(&self.store),
+            Ok(_) => {}
+            Err(e) => tracing::error!("applying rules failed: {e:#}"),
+        }
+    }
+
+    /// Removes items whose rule-based expiry has passed (checked every 30 s).
+    fn expire_items(&mut self) {
+        if self.last_expiry_check.elapsed() < Duration::from_secs(30) {
+            return;
+        }
+        self.last_expiry_check = Instant::now();
+        match self.store.expire_due(now_ms()) {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::info!("{n} items expired");
+                if self.shelf.is_visible() {
+                    let keep = self.shelf.selected;
+                    let text = self.shelf.search_text();
+                    self.shelf.set_query(&text, &self.store);
+                    self.shelf.select(keep);
+                }
+            }
+            Err(e) => tracing::error!("expiring items failed: {e:#}"),
+        }
+    }
+
     fn apply_settings(&mut self) {
+        let (rules, errors) = crate::rules::Rules::new(&self.settings.rules);
+        for e in &errors {
+            tracing::warn!("rule skipped: {e}");
+        }
+        self.rules = rules;
+        self.rule_errors = errors;
         LINK_PREVIEWS_ENABLED.store(self.settings.general.link_previews, std::sync::atomic::Ordering::Relaxed);
         self.filter = PrivacyFilter::new(&self.settings.privacy);
         self.shelf.set_visible_in_screen_sharing(self.settings.privacy.visible_during_screen_sharing);
@@ -600,6 +661,7 @@ impl App {
             Capture::Item(item) => match self.store.insert(&item, true) {
                 Ok(inserted) => {
                     tracing::debug!("captured {:?} item {inserted:?}", item.kind);
+                    self.apply_rules(inserted.id(), &item);
                     self.push_stack(inserted.id());
                     if self.settings.general.sounds
                         && let Some(s) = NSSound::soundNamed(&ns("Tink"))
@@ -1004,6 +1066,7 @@ fn tick() {
         app.poll_clipboard();
         app.maintenance();
         app.check_settings_file();
+        app.expire_items();
         app.poll_import()
     })
     .flatten();
@@ -1359,6 +1422,34 @@ fn dispatch(raw_tag: isize) {
             with(|app| app.open_settings());
         }
         settings_window::ADD_APP => add_excluded_app(),
+        settings_window::ADD_RULE => edit_rule(None),
+        settings_window::EDIT_RULE => {
+            if let Some(row) = with(|app| app.settings_window.as_ref().and_then(|w| w.selected_rule_row())).flatten() {
+                edit_rule(Some(row));
+            }
+        }
+        settings_window::REMOVE_RULE => {
+            let Some((row, name)) = with(|app| {
+                let row = app.settings_window.as_ref()?.selected_rule_row()?;
+                let r = app.settings.rules.get(row)?;
+                Some((row, if r.name.is_empty() { r.summary() } else { r.name.clone() }))
+            })
+            .flatten() else {
+                return;
+            };
+            if run_modal(|mtm| dialogs::confirm(&format!("Remove the rule \u{201c}{name}\u{201d}?"), "", "Remove", mtm))
+            {
+                with(|app| {
+                    if row < app.settings.rules.len() {
+                        app.settings.rules.remove(row);
+                        app.save_settings();
+                        if let Some(win) = &app.settings_window {
+                            win.load(&app.settings);
+                        }
+                    }
+                });
+            }
+        }
         settings_window::REMOVE_APP => {
             with(|app| {
                 let Some(row) = app.settings_window.as_ref().and_then(|w| w.selected_app_row()) else { return };
@@ -1626,6 +1717,34 @@ pub fn set_hotkeys_suspended(suspended: bool) {
             app.hotkeys.set(&[]);
         } else {
             app.apply_settings();
+        }
+    });
+}
+
+/// Adds a rule (`None`) or edits the rule at `row`.
+fn edit_rule(row: Option<usize>) {
+    let Some((rule, boards)) = with(|app| {
+        let rule = match row {
+            Some(r) => app.settings.rules.get(r)?.clone(),
+            None => crate::rules::Rule::default(),
+        };
+        let boards: Vec<String> = app.store.pinboards().unwrap_or_default().into_iter().map(|b| b.name).collect();
+        Some((rule, boards))
+    })
+    .flatten() else {
+        return;
+    };
+    let title = if row.is_some() { "Edit Rule" } else { "New Rule" };
+    let Some(edited) = run_modal(|mtm| crate::ui::rule_editor::edit_rule(&rule, title, &boards, mtm)) else { return };
+    with(|app| {
+        match row {
+            Some(r) if r < app.settings.rules.len() => app.settings.rules[r] = edited,
+            _ => app.settings.rules.push(edited),
+        }
+        app.save_settings();
+        if let Some(win) = &app.settings_window {
+            win.load(&app.settings);
+            win.show();
         }
     });
 }

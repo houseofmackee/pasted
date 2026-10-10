@@ -3,6 +3,7 @@ pub mod dialogs;
 pub mod icons;
 pub mod preview;
 pub mod rich_text;
+pub mod rule_editor;
 pub mod settings_window;
 pub mod shelf;
 pub mod stack_panel;

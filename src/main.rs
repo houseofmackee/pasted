@@ -13,6 +13,7 @@ mod ocr;
 mod paste;
 mod paths;
 mod rich;
+mod rules;
 mod search;
 mod settings;
 mod shortcut;

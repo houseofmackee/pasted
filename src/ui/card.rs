@@ -199,7 +199,11 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
     title.setTextColor(Some(&NSColor::whiteColor()));
     title.setFrame(rect(PAD, 24.0, w - PAD * 2.0 - 44.0, 20.0));
     header.addSubview(&title);
-    let time = label(&relative_time(item.timestamp), 11.0, false, mtm);
+    let mut when = relative_time(item.timestamp);
+    if let Some(at) = item.expires_at {
+        when.push_str(&format!(" \u{00b7} expires in {}", crate::rules::format_duration(at - crate::model::now_ms())));
+    }
+    let time = label(&when, 11.0, false, mtm);
     time.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.92)));
     time.setFrame(rect(PAD, 7.0, w - PAD * 2.0 - 44.0, 16.0));
     header.addSubview(&time);

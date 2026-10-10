@@ -14,6 +14,7 @@ Everything stays on your Mac: no accounts and no telemetry. The only network acc
 - Paste As (⌥Return or right-click): case changes, trimming, single line, tracking-free links, pretty or minified JSON, sorted or unique lines, URL encoding, and Markdown as formatted text; only options that change the text are shown
 - Optional automatic cleanup on every paste: trim whitespace and remove link tracking parameters (both off by default)
 - Snippet placeholders in pinboard items, expanded when pasting (see below)
+- Rules that expire or pin new copies automatically (see below)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -68,6 +69,24 @@ Items on a pinboard can contain placeholders that are filled in when you paste t
 | `{input:Name}` | asked for in a dialog when you paste |
 
 Write `\{date}` to paste the braces literally. To paste a snippet without expanding it, use Paste As > Without Placeholders. Expansion can be turned off in Settings > Pasting.
+
+## Rules
+
+Rules run on every new copy. Each has optional conditions (source app, item types, a regular expression) that must all match, and one or both actions: remove the item from history after a while, or pin it to a pinboard (created if needed). Pinned items never expire. Manage rules in Settings > Rules (⌘N adds one) or in the settings file:
+
+```toml
+[[rules]]
+name = "Terminal copies are temporary"
+app = "Terminal"                # bundle id or app name
+expire_after = "1h"             # 30s, 15m, 1h, 2d, 1w
+
+[[rules]]
+name = "Tickets"
+matches = "(?i)\\bJIRA-\\d+"
+pin_to = "Tickets"
+```
+
+Cards show when an item will expire. `pasted rules` lists rules and flags invalid ones; `pasted rules test "text" --app Terminal` shows which would match.
 
 ## Command line
 
