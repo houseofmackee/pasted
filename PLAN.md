@@ -1,0 +1,275 @@
+# Pasted: implementation plan
+
+Pasted is a native macOS clipboard manager written in Rust, modeled on [Paste](https://pasteapp.io) (Wiheads). It aims for feature parity with Paste's core experience, a few improvements, and a one-click importer for an existing Paste installation's history, pinboards and settings.
+
+## 1. Goals and non-goals
+
+**Goals**
+
+- Unlimited, searchable clipboard history that survives restarts.
+- A keyboard-first, visual "shelf" UI summoned by a global hotkey.
+- Pinboards (named, colored collections) and a Paste Stack for sequential pasting.
+- Strong privacy defaults: ignore passwords and sensitive apps, everything local by default.
+- Import of history, pinboards and settings from the installed Paste app.
+- Small, fast, low idle CPU (target under 0.5% idle, under 60 MB RSS with 10k items).
+
+**Non-goals for v1**
+
+- iOS/iPadOS companion apps.
+- Team/shared pinboards (needs a server or CloudKit sharing; revisit after sync).
+- Mac App Store distribution (sandboxing blocks synthetic paste via accessibility; ship Developer ID + notarization instead).
+
+## 2. Technology choices
+
+| Concern | Choice | Reason |
+| --- | --- | --- |
+| UI | Native AppKit via `objc2`, `objc2-app-kit`, `objc2-foundation` | Paste's UX depends on `NSPanel` behavior (non-activating floating panel, all Spaces, over full-screen apps). Native gives this directly and keeps memory low. |
+| Pasteboard | `NSPasteboard` through `objc2-app-kit` | Need every UTI representation, `changeCount`, and the `org.nspasteboard.*` privacy markers. |
+| Global hotkeys | Carbon `RegisterEventHotKey` (via small FFI) | Works without accessibility permission; same mechanism Paste uses. |
+| Synthetic paste | `CGEventPost` Cmd+V via `objc2-core-graphics` | Requires Accessibility permission (same as Paste). |
+| Storage | SQLite via `rusqlite` (bundled, FTS5 enabled) | Single file, WAL mode, full text search. |
+| Large blobs | Content-addressed files under `~/Library/Application Support/Pasted/blobs/` | Keeps DB small; dedupe by SHA-256. |
+| OCR | Apple Vision (`VNRecognizeTextRequest`) via `objc2-vision` | On-device, matches Paste's image text search. |
+| Settings | `serde` + TOML file, mirrored to an in-memory struct | Human-editable, easy to export/import. |
+| Import decoding | `plist`, `flate2`, `lzfse` crates | Paste stores data as JSON, deflate, LZFSE and binary plists (see section 6). |
+| Logging | `tracing` + `tracing-oslog` | Shows up in Console.app. |
+| Launch at login | `SMAppService` (macOS 13+) | Modern, no helper app. |
+| Updates | Sparkle 2 (embedded framework) | Standard for Developer ID apps. |
+| Packaging | `cargo` build + a `xtask` that assembles `Pasted.app`, signs, notarizes, builds DMG | Reproducible from CLI. |
+
+Minimum macOS: 14.0 (Sonoma). Set in `.cargo/config.toml` and `macos/Info.plist`.
+
+## 3. Architecture
+
+```
+src/
+  main.rs              app entry, NSApplication setup, LSUIElement agent app
+  app/                 AppDelegate, menu bar status item, lifecycle
+  clipboard/
+    monitor.rs         polls NSPasteboard.changeCount (250 ms, adaptive)
+    capture.rs         reads all representations, builds ClipItem
+    classify.rs        text / rich text / link / image / file / color / code detection
+    privacy.rs         concealed/transient markers, excluded apps, regex rules
+    writer.rs          writes an item back to NSPasteboard (full or plain text)
+  paste/
+    inject.rs          CGEvent Cmd+V into the frontmost app
+    stack.rs           Paste Stack queue
+  store/
+    db.rs              rusqlite pool, migrations
+    schema.sql         items, representations, pinboards, apps, fts tables
+    blobs.rs           content-addressed blob files
+    retention.rs       history pruning by age / count / size
+  search/
+    query.rs           query parser (text + filters like type:, app:, before:)
+    fts.rs             FTS5 queries, ranking
+    ocr.rs             Vision OCR worker queue
+  ui/
+    shelf.rs           bottom panel (NSPanel), horizontal card strip
+    card.rs            card rendering per item type
+    preview.rs         large preview / Quick Look
+    editor.rs          edit text items in place
+    pinboards.rs       pinboard tabs, create/rename/color
+    settings/          preferences window (General, Shortcuts, Rules, Sync, Import, Advanced)
+    onboarding.rs      permission walkthrough
+  hotkeys.rs           Carbon hotkey registration, shortcut model
+  settings.rs          Settings struct, load/save, change notifications
+  import/
+    paste_app.rs       importer for the Paste app (section 6)
+    decode.rs          blob decoding (deflate, LZFSE, bplist, external refs)
+  mcp/                 optional local MCP server (phase 5)
+xtask/                 bundling, signing, notarization, DMG
+macos/                 Info.plist, entitlements, icons
+```
+
+Threading: the main thread owns AppKit. Clipboard capture runs on the main run loop timer (pasteboard access is cheap) and hands heavy work (hashing, thumbnailing, OCR, DB writes) to a worker thread pool over channels. The UI reads from the DB through a small query cache.
+
+### Data model (SQLite)
+
+- `items(id, kind, title, created_at, last_used_at, use_count, source_app_id, device_id, checksum, preview_text, size_bytes, pinned)`
+- `representations(item_id, uti, blob_hash | inline_data, size)`: every pasteboard type preserved so pasting back is lossless.
+- `pinboards(id, name, color, sort_index, created_at)` and `pinboard_items(pinboard_id, item_id, sort_index)`.
+- `apps(id, bundle_id, name, icon_png)`.
+- `items_fts` (FTS5 over title, text, OCR text, URL, app name).
+- `ocr(item_id, text, confidence)`.
+- `import_runs(id, source, started_at, finished_at, items_imported, items_skipped)` for idempotent re-import.
+
+## 4. Feature list
+
+### 4.1 Parity with Paste
+
+1. **Clipboard history**: capture everything copied, unlimited by default, dedupe identical consecutive copies (by checksum, bump timestamp instead of duplicating).
+2. **Content types**: plain text, rich text (RTF/HTML), links (with page title and favicon/OG image fetched lazily), images, files/folders, colors (hex/rgb detection with swatch), code (language detection, monospace preview).
+3. **Shelf UI**: bottom-of-screen panel with horizontal cards, source app icon/color, relative timestamp, character count or image dimensions. Opens on the active screen, over full-screen apps, without stealing focus from the target app.
+4. **Keyboard navigation**: arrows, Return to paste, Shift+Return to paste as plain text, Cmd+1 to Cmd+9 quick paste, Space for preview, Cmd+F search, Cmd+E edit, Cmd+Delete delete, Tab to switch pinboards, Esc to close.
+5. **Search and filters**: instant full text search, filter by type, source app, date, and pinboard; OCR text from images is searchable.
+6. **Pinboards**: create, rename, color, reorder; drag items in; per-pinboard shortcuts (next/previous pinboard).
+7. **Paste Stack**: dedicated hotkey opens a stack; copy several items, then paste them in order (FIFO or LIFO option).
+8. **Edit and rename**: edit text items, set custom titles.
+9. **Drag and drop**: drag cards out into any app; drag files/text into the shelf to save them.
+10. **Preview**: large preview and Quick Look for files and images.
+11. **Paste as plain text** (per paste and as a global default).
+12. **Privacy rules**: ignore `org.nspasteboard.ConcealedType`, `TransientType`, `AutoGeneratedType`; excluded app list (prefilled with password managers); hide content during screen sharing (Paste's `isScreenSharingContentVisible`).
+13. **History retention**: day, week, month, year, forever; plus optional size cap.
+14. **Settings**: launch at login, sounds on copy/paste, shelf position, theme, shortcuts.
+15. **Menu bar item** with quick access, pause capture, and preferences.
+16. **Sync** across Macs via the user's private iCloud (CloudKit). Planned for a later phase since it needs an Apple Developer team and entitlements.
+17. **AI integration (MCP)**: local MCP server that lets tools like Claude query history, with an explicit per-pinboard / per-type allowlist. Paste ships this as `PastePackages_PasteMCP`.
+
+### 4.2 Improvements over Paste
+
+- **Fully local and open data**: documented SQLite schema, plain TOML settings, `pasted export` to JSON/ZIP. No telemetry (Paste embeds PostHog, Sentry, Firebase Crashlytics).
+- **CLI companion**: `pasted list`, `pasted search <q>`, `pasted copy <id>`, `pasted pin <id> <board>`, piping from stdin (`echo hi | pasted add`). Handy in scripts and terminals.
+- **Rule engine**: regex and app-based rules, for example "never save strings that look like API keys / JWTs / credit cards", "auto-expire items from Terminal after 1 hour", "auto-pin items matching X to board Y".
+- **Text transforms on paste**: trim whitespace, change case, strip formatting, URL clean-up (remove tracking params), JSON pretty-print, Markdown to rich text.
+- **Snippets with placeholders**: pinboard items can contain `{date}`, `{clipboard}`, `{cursor}` style variables expanded at paste time.
+- **Encrypted at rest option**: SQLCipher plus a Keychain-stored key for users who want it.
+- **Sensitive item auto-expiry**: items flagged as secrets are kept for N minutes then purged.
+- **Fast fuzzy search** mode in addition to FTS (good for short queries).
+- **Per-device and per-app statistics** screen (most pasted, most copied from).
+- **Accessibility**: full VoiceOver labels on cards, reduced motion support.
+
+## 5. Phased roadmap
+
+**Phase 0: foundation (done)**
+Cargo project, git repo, macOS-only build guard, Info.plist template, deployment target.
+
+**Phase 1: headless core**
+- `store/` with migrations, blobs, retention; unit tests against a temp DB.
+- `clipboard/monitor` + `capture` + `classify` + `privacy`, running as a menu bar agent app with no shelf yet.
+- CLI subcommands (`list`, `search`, `copy`) to exercise the core before UI exists.
+- Exit criteria: copies from Safari, Finder, Preview, Terminal and 1Password are captured or correctly ignored; restart keeps history.
+
+**Phase 2: shelf UI and pasting**
+- `NSPanel` shelf with virtualized card strip (only visible cards are realized).
+- Keyboard navigation, quick paste, plain text paste, Accessibility permission onboarding, `CGEvent` paste.
+- Global hotkey (default Shift+Cmd+V, matching Paste).
+- Exit criteria: summon, pick and paste into the previously focused app in under 100 ms end to end.
+
+**Phase 3: Paste importer** (section 6). Placed early so the app is immediately useful with existing history.
+
+**Phase 4: organization and search**
+- Pinboards, Paste Stack, edit/rename, drag and drop, preview, filters, OCR worker, link metadata fetch.
+- Settings window with all tabs.
+
+**Phase 5: improvements and integrations**
+- Rule engine, transforms, snippets, encryption, statistics, MCP server, export.
+
+**Phase 6: distribution**
+- `xtask bundle` (build universal binary, assemble `.app`, copy `Info.plist`, icons), codesign with hardened runtime, notarize, staple, DMG, Sparkle appcast.
+- Launch at login via `SMAppService`.
+
+**Phase 7: sync**
+- CloudKit private database sync (requires Apple Developer account and entitlements). Conflict-free design: items immutable, pinboard membership as last-writer-wins records.
+
+## 5a. Progress (2026-10-10)
+
+Done:
+
+- **Phase 0 and 1**: storage (SQLite with trigram FTS5, content-addressed blobs, retention, garbage collection), capture, classification, privacy filter, settings, CLI.
+- **Phase 2**: menu bar agent app, non-activating shelf panel with lazily built cards, global hotkeys (Carbon), keyboard navigation, quick paste, plain text paste, Cmd+V injection, drag out, context menus, preview, edit and rename dialogs. Measured shelf open time: 17 to 27 ms warm, 94 ms cold (release build, 150 item page).
+- **Phase 3**: Paste importer (history, pinboards, OCR text, shortcuts, retention), idempotent, verified against a real Paste 6.6.7 store: 1432 of 1432 items decoded.
+- **Phase 4 (partial)**: pinboards (create, rename, recolor, delete, pin/unpin), Paste Stack, Vision OCR worker, search filters.
+- **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
+
+Next:
+
+- Native Settings window (currently a TOML file with reload).
+- Link previews (page title and image) and rich text rendering on cards.
+- Phase 5 improvements: rule engine actions (auto-expire, auto-pin), paste transforms, snippet placeholders, encryption at rest, statistics view, MCP server, export.
+- App icon, universal binary, notarization and DMG, Sparkle updates (needs the deferred bundle id and signing team).
+- Paste Stack ordering option (LIFO) and an explicit Accessibility onboarding window.
+
+Known limitations:
+
+- Paste's OCR index on this Mac only references items that no longer exist, so 0 OCR texts matched on import; Pasted's own OCR worker covers the imported images instead.
+- Importing with a short retention setting removes older imported history at the next cleanup; the import summary warns about this.
+
+## 6. Importing from Paste
+
+Findings from inspecting the installed copy on this Mac (Paste 6.6.7, Setapp edition, bundle id `com.wiheads.paste-setapp`). The importer must also handle the direct-download edition (`com.wiheads.paste`) and App Store edition, whose paths differ only by bundle id or container.
+
+### 6.1 Locations
+
+| Data | Path (Setapp edition) |
+| --- | --- |
+| Main Core Data store | `~/Library/Application Support/com.wiheads.paste-setapp/db.sqlite` (+ `-wal`, `-shm`) |
+| Externally stored blobs | `~/Library/Application Support/com.wiheads.paste-setapp/.db_SUPPORT/_EXTERNAL_DATA/<UUID>` |
+| Search index (FTS5, OCR) | `~/Library/Application Support/com.wiheads.paste-setapp/index.sqlite` |
+| Backups | `~/Library/Application Support/com.wiheads.paste-setapp/backup/<timestamp>/` |
+| Preferences | `~/Library/Preferences/com.wiheads.paste-setapp.plist` |
+
+Candidate roots to probe, in order: `com.wiheads.paste-setapp`, `com.wiheads.paste`, and `~/Library/Containers/com.wiheads.paste*/Data/Library/Application Support/...` for sandboxed builds. Let the user pick a backup folder manually as a fallback.
+
+### 6.2 Schema (Core Data, `Z*` tables)
+
+- `ZITEMENTITY`: one row per clip. Key columns: `ZIDENTIFIER` (UUID), `ZRAWTYPE`, `ZTITLE`, `ZTIMESTAMP`, `ZCREATEDAT`, `ZCHECKSUM`, `ZLIST` (FK to list), `ZDISPLAYORDERINPINBOARD`, `ZSOURCEAPPLICATION`, `ZDEVICE`, `ZRAWPREVIEW`.
+- `ZITEMDATAENTITY`: `ZITEM` (FK), `ZRAWPASTEBOARDITEMS` (full pasteboard contents).
+- `ZLISTENTITY`: lists. `ZRAWTYPE` 1 = clipboard history, 2 = pinboard. `ZNAME`, `ZRAWATTRIBUTES` JSON (`{"type":"pinboard","colorCode":<ARGB int>}` or `{"type":"clipboard","capacity":<n>, likely days}`).
+- `ZLISTMETADATAENTITY`: pinboard ordering (`ZINDEX`).
+- `ZAPPLICATIONENTITY`: `ZBUNDLEIDENTIFIER`, `ZNAME`, `ZRAWCOLOR`, `ZRAWICON`.
+- `ZDEVICEENTITY`: device name and type.
+- Timestamps are Core Data reference dates: seconds since 2001-01-01 UTC (add 978307200 for Unix time).
+- `ZRAWTYPE` for items (observed counts suggest): 0 = color, 1 = image, 3 = file, 4 = link, 5 = text. Confirm each mapping against decoded content during implementation.
+
+### 6.3 Blob encodings
+
+`ZRAWPASTEBOARDITEMS` starts with a one byte Core Data marker:
+
+- `0x02` followed by a NUL terminated UUID: external storage, read `.db_SUPPORT/_EXTERNAL_DATA/<UUID>`.
+- `0x01` followed by inline data, which is one of:
+  - raw deflate of JSON (older items),
+  - `bvx2` / `bvxn` magic: LZFSE compressed,
+  - `bplist00`: binary plist.
+
+After decompression the payload (JSON or plist) is an array of pasteboard items, each `{ "types": [...], "dataByType": { "<UTI>": <base64 or data> } }`. These map one to one onto our `representations` table, so imports are lossless.
+
+`ZRAWPREVIEW` is JSON for older items (`text`, `textLength`, `url`, `urlName`, `urlIconData`, `urlImageData`) and a binary plist for newer ones. Use it only for titles and link metadata; regenerate thumbnails ourselves.
+
+`index.sqlite` holds `items(id, app, timestamp, type, title, content, device)` plus `items_ocr(item_id, metadata)`. Import OCR text from here to avoid re-running Vision on every image.
+
+### 6.4 Settings mapping
+
+Read the preferences plist with the `plist` crate (never via `defaults write`). Shortcut values are JSON blobs such as `{"keyCode":9,"internalModifiers":...}`.
+
+| Paste key | Pasted setting |
+| --- | --- |
+| `activationShortcut` | Open shelf hotkey |
+| `pasteStackShortcut` | Paste Stack hotkey |
+| `nextPinboardShortcut`, `previousPinboardShortcut` | Pinboard navigation |
+| Clipboard list `capacity` attribute | History retention |
+| `isScreenSharingContentVisible` | Hide content while screen sharing |
+| `selectedListIdentifier` | Initially selected board |
+| `NSWindow Frame ...` | ignored |
+| licensing, PostHog, Firebase, CloudKit keys | ignored, never copied |
+
+Excluded apps and rules live in the Core Data store or preferences depending on version; detect and map them when present, otherwise log as "not found".
+
+### 6.5 Import procedure
+
+1. Detect installations and show item/pinboard counts in Settings > Import (also `pasted import paste [--dry-run]`).
+2. Warn if Paste is running; offer to quit it (WAL contents are only consistent while closed or when copied together).
+3. Copy `db.sqlite`, `-wal`, `-shm` and `index.sqlite*` to a temp dir and open read-only. Never write to Paste's files.
+4. Import apps, devices, lists (pinboards), then items in timestamp order, decoding blobs and writing representations to our blob store.
+5. Idempotency: key imported items by Paste's `ZIDENTIFIER` (stored in an `external_id` column) so re-running the import only adds new items.
+6. Map settings, show a summary (imported, skipped, failed with reasons), delete temp copies.
+7. Tests: build a fixture Core Data DB with synthetic items covering each blob encoding; never commit real user data.
+
+## 7. Permissions and entitlements
+
+- Accessibility (for synthetic Cmd+V): onboarding explains why, deep links to System Settings.
+- Full Disk Access is not required for importing from `~/Library/Application Support/com.wiheads.paste*`, but sandboxed Paste containers may require it; detect and prompt.
+- Hardened runtime, no sandbox, Developer ID signing.
+
+## 8. Testing strategy
+
+- Unit tests for classify, privacy rules, query parser, retention, import decoders.
+- Integration tests that drive a private named `NSPasteboard` (not the general one) to test capture and write-back.
+- Snapshot tests for card layout metrics.
+- Performance benchmarks (`criterion`): insert 10k items, FTS search latency under 20 ms at 100k items.
+- Manual QA checklist per release: full-screen apps, multiple displays, Spaces, Stage Manager, secure input fields.
+
+## 9. Decisions and deferred items
+
+- **License**: open source, dual licensed MIT OR Apache-2.0 (Rust ecosystem convention). Not a paid product.
+- **Deferred: bundle identifier and signing team.** `io.pasted.app` stays a placeholder until a real Apple Developer team exists. Revisit before Phase 6 notarization.
+- **Deferred: iCloud sync.** Phase 7 is on hold. Revisit later, including whether a folder-based sync (iCloud Drive/Dropbox) should come before CloudKit.
