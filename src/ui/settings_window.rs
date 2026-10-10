@@ -251,6 +251,8 @@ pub struct SettingsWindow {
     sounds: Retained<NSButton>,
     launch_at_login: Retained<NSButton>,
     link_previews: Retained<NSButton>,
+    trim_whitespace: Retained<NSButton>,
+    clean_links: Retained<NSButton>,
     accessibility: Retained<NSTextField>,
     login_note: Retained<NSTextField>,
     open_shelf: Retained<ShortcutRecorder>,
@@ -387,8 +389,6 @@ impl SettingsWindow {
         f.add(&max_size);
         let mut boxes = Vec::new();
         for (i, title) in [
-            "Paste directly into the active app",
-            "Paste as plain text by default",
             "Play a sound when something is copied",
             "Launch Pasted at login",
             "Show link previews (fetches page titles and images)",
@@ -397,21 +397,46 @@ impl SettingsWindow {
         .enumerate()
         {
             let b = checkbox(title, target, mtm);
-            let y = f.row(
-                if i == 0 {
-                    "Pasting:"
-                } else if i == 2 {
-                    "General:"
-                } else {
-                    ""
-                },
-                20.0,
-            );
+            let y = f.row(if i == 0 { "General:" } else { "" }, 20.0);
             b.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 60.0, 20.0));
             f.add(&b);
             boxes.push(b);
         }
         let login_note = f.note("", CONTROL_X + 20.0);
+        add_tab("General", &f.view);
+        let [sounds, launch_at_login, link_previews]: [Retained<NSButton>; 3] =
+            boxes.try_into().unwrap_or_else(|_| unreachable!());
+
+        // Pasting
+        let mut f = Form::new(mtm);
+        let mut boxes = Vec::new();
+        for (i, title) in [
+            "Paste directly into the active app",
+            "Paste as plain text by default (\u{21e7}Return does the opposite)",
+            "Trim spaces and blank lines around text",
+            "Remove tracking parameters from links (utm_, fbclid, \u{2026})",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let b = checkbox(title, target, mtm);
+            let y = f.row(
+                match i {
+                    0 => "When pasting:",
+                    2 => "Clean up automatically:",
+                    _ => "",
+                },
+                20.0,
+            );
+            b.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 40.0, 20.0));
+            f.add(&b);
+            boxes.push(b);
+        }
+        f.note(
+            "Automatic cleanup applies to plain text and links; formatted text keeps its formatting. For one-off \
+             changes, press \u{2325}Return in the shelf or right-click a card and choose Paste As.",
+            CONTROL_X,
+        );
         let accessibility = label("", 13.0, false, mtm);
         let y = f.row("Accessibility:", 26.0);
         accessibility.setFrame(rect(CONTROL_X, y + 4.0, 130.0, 18.0));
@@ -424,8 +449,8 @@ impl SettingsWindow {
              Without it, chosen items are only copied to the clipboard.",
             CONTROL_X,
         );
-        add_tab("General", &f.view);
-        let [paste_directly, plain_default, sounds, launch_at_login, link_previews]: [Retained<NSButton>; 5] =
+        add_tab("Pasting", &f.view);
+        let [paste_directly, plain_default, trim_whitespace, clean_links]: [Retained<NSButton>; 4] =
             boxes.try_into().unwrap_or_else(|_| unreachable!());
 
         // Shortcuts
@@ -598,6 +623,8 @@ impl SettingsWindow {
             sounds,
             launch_at_login,
             link_previews,
+            trim_whitespace,
+            clean_links,
             accessibility,
             login_note,
             open_shelf,
@@ -629,7 +656,8 @@ impl SettingsWindow {
 
     /// Selects a tab by its (case-insensitive) label.
     pub fn select_tab(&self, name: &str) {
-        let index = ["general", "shortcuts", "privacy", "data"].iter().position(|t| t.eq_ignore_ascii_case(name));
+        let index =
+            ["general", "pasting", "shortcuts", "privacy", "data"].iter().position(|t| t.eq_ignore_ascii_case(name));
         if let Some(i) = index {
             self.tabs.selectTabViewItemAtIndex(i as isize);
         }
@@ -647,6 +675,8 @@ impl SettingsWindow {
         set_checked(&self.sounds, g.sounds);
         set_checked(&self.launch_at_login, g.launch_at_login);
         set_checked(&self.link_previews, g.link_previews);
+        set_checked(&self.trim_whitespace, s.pasting.trim_whitespace);
+        set_checked(&self.clean_links, s.pasting.clean_links);
         self.open_shelf.set_shortcut(s.shortcuts.open_shelf);
         self.paste_stack.set_shortcut(s.shortcuts.paste_stack);
         self.next_board.set_shortcut(s.shortcuts.next_pinboard);
@@ -680,6 +710,8 @@ impl SettingsWindow {
         g.sounds = checked(&self.sounds);
         g.launch_at_login = checked(&self.launch_at_login);
         g.link_previews = checked(&self.link_previews);
+        s.pasting.trim_whitespace = checked(&self.trim_whitespace);
+        s.pasting.clean_links = checked(&self.clean_links);
         let sc = &mut s.shortcuts;
         for (rec, target) in [
             (&self.open_shelf, &mut sc.open_shelf),

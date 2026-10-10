@@ -17,6 +17,7 @@ mod search;
 mod settings;
 mod shortcut;
 mod store;
+mod transform;
 mod ui;
 
 use clap::Parser;

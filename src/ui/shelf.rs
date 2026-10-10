@@ -440,6 +440,10 @@ impl Shelf {
         self.items.get(self.selected)
     }
 
+    pub fn selected_card(&self) -> Option<Retained<CardView>> {
+        self.cards.get(self.selected).cloned()
+    }
+
     pub fn forget_image(&mut self, id: i64) {
         self.images.remove(&id);
         self.rich.remove(&id);

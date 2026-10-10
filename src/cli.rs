@@ -10,6 +10,7 @@ use crate::model::*;
 use crate::search::Query;
 use crate::settings::Settings;
 use crate::store::Store;
+use crate::transform::Transform;
 
 #[derive(Parser)]
 #[command(name = "pasted", version, about = "A fast, private clipboard manager for macOS")]
@@ -55,6 +56,17 @@ pub enum Command {
         /// Copy only the plain text.
         #[arg(long)]
         plain: bool,
+        /// Copy with a cleanup applied, for example `--as snake` (see `pasted transform --list`).
+        #[arg(long = "as", value_name = "TRANSFORM")]
+        transform: Option<String>,
+    },
+    /// Apply a cleanup to stdin and print the result.
+    Transform {
+        /// Transform name, for example `clean-links` or `pretty-json`.
+        name: Option<String>,
+        /// List available transforms.
+        #[arg(long)]
+        list: bool,
     },
     /// Save text from stdin (or arguments) as a new item.
     Add { text: Vec<String> },
@@ -126,6 +138,10 @@ fn print_items(items: &[Item], json: bool) -> Result<()> {
     Ok(())
 }
 
+fn parse_transform(name: &str) -> Result<Transform> {
+    Transform::parse(name).with_context(|| format!("unknown transform {name:?}; see `pasted transform --list`"))
+}
+
 fn board_id(store: &Store, name: &str, create: bool) -> Result<i64> {
     match store.pinboard_by_name(name)? {
         Some(id) => Ok(id),
@@ -166,10 +182,19 @@ pub fn run(command: Command) -> Result<()> {
             let item = require(&store, id)?;
             println!("{}", item.text);
         }
-        Command::Copy { id, plain } => {
+        Command::Copy { id, plain, transform } => {
             let item = require(&store, id)?;
             let pb = pasteboard::general();
-            if plain {
+            if let Some(name) = transform {
+                let t = parse_transform(&name)?;
+                let out = t.apply(&item.text).with_context(|| format!("{} does not apply to item {id}", t.name()))?;
+                let mut reps =
+                    vec![Representation { index: 0, uti: UTI_PLAIN_TEXT.into(), data: out.text.into_bytes() }];
+                if let Some(html) = out.html {
+                    reps.push(Representation { index: 0, uti: UTI_HTML.into(), data: html.into_bytes() });
+                }
+                pasteboard::write(&pb, &reps);
+            } else if plain {
                 pasteboard::write_text(&pb, &item.text);
             } else {
                 pasteboard::write(&pb, &store.representations(id)?);
@@ -212,6 +237,19 @@ pub fn run(command: Command) -> Result<()> {
                 )?
                 .id();
             println!("{id}");
+        }
+        Command::Transform { name, list } => {
+            if list || name.is_none() {
+                for t in Transform::ALL {
+                    println!("{:<14} {}", t.name(), t.label());
+                }
+                return Ok(());
+            }
+            let t = parse_transform(name.as_deref().unwrap_or_default())?;
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let out = t.apply(&input).with_context(|| format!("{} does not apply to this input", t.name()))?;
+            print!("{}", out.html.unwrap_or(out.text));
         }
         Command::Delete { id } => {
             if !store.delete(id)? {

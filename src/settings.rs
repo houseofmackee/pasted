@@ -128,6 +128,29 @@ impl Default for Privacy {
     }
 }
 
+/// Cleanups applied automatically to plain text and links when pasting.
+/// Off by default so pastes match what was copied.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pasting {
+    pub trim_whitespace: bool,
+    pub clean_links: bool,
+}
+
+impl Pasting {
+    /// Applies the enabled cleanups to `text`.
+    pub fn clean(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        if self.clean_links {
+            out = crate::transform::clean_links(&out);
+        }
+        if self.trim_whitespace {
+            out = out.trim().to_string();
+        }
+        out
+    }
+}
+
 /// Optional privacy checks applied to items brought in by an import. Each is
 /// off by default, so an import copies history as it is unless asked.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -155,6 +178,7 @@ pub struct Settings {
     pub general: General,
     pub shortcuts: Shortcuts,
     pub privacy: Privacy,
+    pub pasting: Pasting,
     pub import: ImportFilter,
 }
 

@@ -66,6 +66,7 @@ const ITEM_PIN_NEW: u8 = 37;
 const ITEM_UNPIN: u8 = 38;
 const ITEM_DELETE: u8 = 39;
 const ITEM_OPEN: u8 = 40;
+const ITEM_PASTE_AS: u8 = 41;
 
 const POLL_INTERVAL: f64 = 0.3;
 /// Posted by `pasted open` to show the shelf of the running app.
@@ -727,8 +728,54 @@ impl App {
 
     fn paste(&mut self, id: i64, plain: bool) {
         let plain = plain ^ self.settings.general.paste_plain_text_by_default;
+        // Automatic cleanup applies to plain text and links; formatted text is left as is.
+        if (self.settings.pasting.trim_whitespace || self.settings.pasting.clean_links)
+            && let Ok(Some(item)) = self.store.get(id)
+        {
+            let cleanable = plain || matches!(item.kind, ItemKind::Text | ItemKind::Code | ItemKind::Link);
+            let cleaned = self.settings.pasting.clean(&item.text);
+            if cleanable && cleaned != item.text {
+                let link = (item.kind == ItemKind::Link).then(|| cleaned.trim().to_string());
+                self.paste_output(id, crate::transform::Output { text: cleaned, html: None }, link);
+                return;
+            }
+        }
         self.close_shelf();
-        if !self.write_item(id, plain) || !self.settings.general.paste_directly {
+        if self.write_item(id, plain) {
+            self.finish_paste();
+        }
+    }
+
+    /// Pastes `item` transformed by `t`.
+    fn paste_as(&mut self, id: i64, t: crate::transform::Transform) {
+        let Ok(Some(item)) = self.store.get(id) else { return };
+        let Some(output) = t.apply(&item.text) else { return };
+        let link = (item.kind == ItemKind::Link && t == crate::transform::Transform::CleanLinks)
+            .then(|| output.text.trim().to_string());
+        self.paste_output(id, output, link);
+    }
+
+    /// Puts transformed text (and HTML or a URL, if any) on the pasteboard and pastes it.
+    fn paste_output(&mut self, id: i64, output: crate::transform::Output, url: Option<String>) {
+        use crate::model::{Representation, UTI_HTML, UTI_PLAIN_TEXT, UTI_URL};
+        self.close_shelf();
+        let mut reps = vec![Representation { index: 0, uti: UTI_PLAIN_TEXT.into(), data: output.text.into_bytes() }];
+        if let Some(html) = output.html {
+            reps.push(Representation { index: 0, uti: UTI_HTML.into(), data: html.into_bytes() });
+        }
+        if let Some(url) = url {
+            reps.push(Representation { index: 0, uti: UTI_URL.into(), data: url.into_bytes() });
+        }
+        let cc = pasteboard::write(&self.pasteboard, &reps);
+        self.own_change = Some(cc);
+        self.last_change = cc;
+        let _ = self.store.mark_used(id);
+        self.finish_paste();
+    }
+
+    /// Presses Cmd+V in the app that was active before the shelf opened.
+    fn finish_paste(&mut self) {
+        if !self.settings.general.paste_directly {
             return;
         }
         if !crate::paste::is_trusted() {
@@ -747,6 +794,24 @@ impl App {
         unsafe {
             let _: () = msg_send![&*self.target, performSelector: sel!(postPaste:), withObject: None::<&AnyObject>, afterDelay: 0.06f64];
         }
+    }
+
+    /// "Paste As" submenu for an item: only transforms that change its text.
+    fn paste_as_menu(&self, item: &crate::model::Item) -> Option<Retained<NSMenu>> {
+        if !matches!(item.kind, ItemKind::Text | ItemKind::RichText | ItemKind::Code | ItemKind::Link) {
+            return None;
+        }
+        let options = crate::transform::Transform::applicable(&item.text);
+        if options.is_empty() {
+            return None;
+        }
+        let menu = NSMenu::new(self.mtm);
+        let t: &AnyObject = &self.target;
+        for (transform, _) in options {
+            let arg = item.id << 8 | transform.index() as i64;
+            menu.addItem(&menu_item(transform.label(), tag(ITEM_PASTE_AS, arg), t, self.mtm));
+        }
+        Some(menu)
     }
 
     fn copy(&mut self, id: i64) {
@@ -870,6 +935,11 @@ fn search_changed() {
 fn shelf_command(command: Sel) -> bool {
     let name = command.name().to_str().unwrap_or("");
     let shift = shift_held();
+    if name == "insertNewlineIgnoringFieldEditor:" {
+        // Option-Return: choose a cleanup, then paste.
+        show_paste_as_menu();
+        return true;
+    }
     with(|app| match name {
         "moveLeft:" => {
             app.shelf.move_selection(-1, &app.store);
@@ -891,10 +961,9 @@ fn shelf_command(command: Sel) -> bool {
             app.shelf.select(last);
             true
         }
-        "insertNewline:" | "insertNewlineIgnoringFieldEditor:" => {
-            let plain = shift || name == "insertNewlineIgnoringFieldEditor:";
+        "insertNewline:" => {
             if let Some(id) = app.selected_id() {
-                app.paste(id, plain);
+                app.paste(id, shift);
             }
             true
         }
@@ -913,6 +982,21 @@ fn shelf_command(command: Sel) -> bool {
         _ => false,
     })
     .unwrap_or(false)
+}
+
+/// Pops the "Paste As" menu over the selected card. The menu runs its own
+/// event loop, so it is shown without holding the state borrow.
+fn show_paste_as_menu() {
+    let Some((menu, card)) = with(|app| {
+        let item = app.shelf.selected_item()?.clone();
+        Some((app.paste_as_menu(&item)?, app.shelf.selected_card()?))
+    })
+    .flatten() else {
+        objc2_app_kit::NSBeep();
+        return;
+    };
+    let point = objc2_foundation::NSPoint::new(12.0, crate::ui::card::CARD_H - 62.0);
+    menu.popUpMenuPositioningItem_atLocation_inView(None, point, Some(&card));
 }
 
 fn escape(app: &mut App) {
@@ -1074,6 +1158,11 @@ pub fn card_menu(index: usize) -> Option<Retained<NSMenu>> {
         };
         add(&menu, "Paste", ITEM_PASTE, item.id);
         add(&menu, "Paste as Plain Text", ITEM_PASTE_PLAIN, item.id);
+        if let Some(sub) = app.paste_as_menu(&item) {
+            let paste_as = menu_item("Paste As", 0, t, mtm);
+            paste_as.setSubmenu(Some(&sub));
+            menu.addItem(&paste_as);
+        }
         add(&menu, "Copy", ITEM_COPY, item.id);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add(&menu, "Preview", ITEM_PREVIEW, item.id);
@@ -1215,6 +1304,12 @@ fn dispatch(raw_tag: isize) {
         QUIT => NSApplication::sharedApplication(mtm()).terminate(None),
         ITEM_PASTE | ITEM_PASTE_PLAIN => {
             with(|app| app.paste(arg, code == ITEM_PASTE_PLAIN));
+        }
+        ITEM_PASTE_AS => {
+            let (id, index) = (arg >> 8, (arg & 0xff) as usize);
+            if let Some(t) = crate::transform::Transform::ALL.get(index).copied() {
+                with(|app| app.paste_as(id, t));
+            }
         }
         ITEM_COPY => {
             with(|app| app.copy(arg));

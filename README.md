@@ -11,6 +11,8 @@ Everything stays on your Mac: no accounts and no telemetry. The only network acc
 - Instant search with filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
+- Paste As (⌥Return or right-click): case changes, trimming, single line, tracking-free links, pretty or minified JSON, sorted or unique lines, URL encoding, and Markdown as formatted text; only options that change the text are shown
+- Optional automatic cleanup on every paste: trim whitespace and remove link tracking parameters (both off by default)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -37,6 +39,7 @@ Pasting directly into other apps needs Accessibility permission (System Settings
 | ← → | Select previous / next item |
 | Return | Paste |
 | ⇧ Return | Paste as plain text |
+| ⌥ Return | Paste As: choose a cleanup |
 | ⌘1 to ⌘9 | Paste the first nine items |
 | Space (empty search) or ⌘Y | Preview |
 | ⌘C | Copy without pasting |
@@ -56,6 +59,8 @@ pasted list -n 20                 # recent history
 pasted search type:link github    # same syntax as the shelf
 pasted show 42                    # print an item's text
 pasted copy 42 [--plain]          # put an item back on the clipboard
+pasted copy 42 --as snake         # copy with a cleanup applied
+pbpaste | pasted transform clean-links   # cleanups work on stdin too (--list shows all)
 echo hi | pasted add              # save text
 pasted pin 42 Snippets            # pin (creates the pinboard if needed)
 pasted board list
@@ -83,7 +88,8 @@ The importer copies Paste's database to a temporary directory and reads the copy
 
 Choose **Settings…** in the menu bar menu or press ⌘, in the shelf. The window has four tabs:
 
-- **General**: history retention, size limit, direct pasting, plain text default, sounds, launch at login, Accessibility status
+- **General**: history retention, size limit, sounds, launch at login, link previews
+- **Pasting**: direct pasting, plain text default, automatic cleanup, Accessibility status
 - **Shortcuts**: click a field and press a new combination (global shortcuts are paused while recording)
 - **Privacy**: confidential content, secret detection, screen sharing visibility, apps to ignore, ignore patterns
 - **Data**: storage statistics, Paste import, clear history, data folder
@@ -112,6 +118,10 @@ ignore_secrets = true
 excluded_apps = ["com.1password.1password", "..."]
 ignore_patterns = []
 visible_during_screen_sharing = false
+
+[pasting]                       # automatic cleanup on paste, off by default
+trim_whitespace = false
+clean_links = false
 
 [import]                        # optional privacy checks for imports, all off by default
 skip_excluded_apps = false
