@@ -19,7 +19,7 @@ use crate::settings::{Retention, Settings};
 use crate::shortcut::{Modifiers, Shortcut};
 
 const W: f64 = 620.0;
-const H: f64 = 470.0;
+const H: f64 = 520.0;
 const LABEL_W: f64 = 190.0;
 const CONTROL_X: f64 = 210.0;
 
@@ -250,6 +250,7 @@ pub struct SettingsWindow {
     plain_default: Retained<NSButton>,
     sounds: Retained<NSButton>,
     launch_at_login: Retained<NSButton>,
+    link_previews: Retained<NSButton>,
     accessibility: Retained<NSTextField>,
     login_note: Retained<NSTextField>,
     open_shelf: Retained<ShortcutRecorder>,
@@ -386,6 +387,7 @@ impl SettingsWindow {
             "Paste as plain text by default",
             "Play a sound when something is copied",
             "Launch Pasted at login",
+            "Show link previews (fetches page titles and images)",
         ]
         .iter()
         .enumerate()
@@ -419,7 +421,7 @@ impl SettingsWindow {
             CONTROL_X,
         );
         add_tab("General", &f.view);
-        let [paste_directly, plain_default, sounds, launch_at_login]: [Retained<NSButton>; 4] =
+        let [paste_directly, plain_default, sounds, launch_at_login, link_previews]: [Retained<NSButton>; 5] =
             boxes.try_into().unwrap_or_else(|_| unreachable!());
 
         // Shortcuts
@@ -573,6 +575,7 @@ impl SettingsWindow {
             plain_default,
             sounds,
             launch_at_login,
+            link_previews,
             accessibility,
             login_note,
             open_shelf,
@@ -617,6 +620,7 @@ impl SettingsWindow {
         set_checked(&self.plain_default, g.paste_plain_text_by_default);
         set_checked(&self.sounds, g.sounds);
         set_checked(&self.launch_at_login, g.launch_at_login);
+        set_checked(&self.link_previews, g.link_previews);
         self.open_shelf.set_shortcut(s.shortcuts.open_shelf);
         self.paste_stack.set_shortcut(s.shortcuts.paste_stack);
         self.next_board.set_shortcut(s.shortcuts.next_pinboard);
@@ -644,6 +648,7 @@ impl SettingsWindow {
         g.paste_plain_text_by_default = checked(&self.plain_default);
         g.sounds = checked(&self.sounds);
         g.launch_at_login = checked(&self.launch_at_login);
+        g.link_previews = checked(&self.link_previews);
         let sc = &mut s.shortcuts;
         for (rec, target) in [
             (&self.open_shelf, &mut sc.open_shelf),

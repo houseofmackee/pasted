@@ -4,12 +4,54 @@ use objc2::rc::Retained;
 use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSFont, NSFontWeightRegular, NSImage, NSImageScaling, NSImageView, NSPanel,
-    NSScrollView, NSTextView, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView, NSWindowStyleMask,
+    NSScrollView, NSTextView, NSView, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSRect};
 
+use super::card::{cover_view, image_from};
+use super::{label, wrapping_label};
 use super::{ns, rect};
+use crate::link_preview::LinkPreview;
 use crate::model::{Item, ItemKind};
+
+/// Image, title, description and URL of a link, top to bottom.
+fn link_layout(parent: &NSView, item: &Item, link: Option<&LinkPreview>, inner: NSRect, mtm: MainThreadMarker) {
+    let (x, w) = (inner.origin.x, inner.size.width);
+    let mut top = inner.origin.y + inner.size.height;
+    if let Some(image) = link.and_then(|l| l.image.as_deref()).and_then(image_from) {
+        let h = 230.0;
+        top -= h;
+        parent.addSubview(&cover_view(&image, rect(x, top, w, h), mtm));
+        top -= 14.0;
+    }
+    let title =
+        item.title.clone().or_else(|| link.and_then(|l| l.title.clone())).or_else(|| item.meta.url_name.clone());
+    if let Some(title) = title {
+        let l = wrapping_label(&title, &NSFont::boldSystemFontOfSize(19.0), 2, mtm);
+        l.setPreferredMaxLayoutWidth(w);
+        let h = l.fittingSize().height.clamp(24.0, 50.0);
+        top -= h;
+        l.setFrame(rect(x, top, w, h));
+        parent.addSubview(&l);
+        top -= 6.0;
+    }
+    if let Some(desc) = link.and_then(|l| l.description.clone()) {
+        let l = wrapping_label(&desc, &NSFont::systemFontOfSize(14.0), 4, mtm);
+        l.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        l.setPreferredMaxLayoutWidth(w);
+        let h = l.fittingSize().height.min(76.0).min((top - inner.origin.y - 30.0).max(0.0));
+        top -= h;
+        l.setFrame(rect(x, top, w, h));
+        parent.addSubview(&l);
+        top -= 8.0;
+    }
+    let url = item.meta.url.clone().unwrap_or_else(|| item.text.trim().to_string());
+    let l = label(&url, 13.0, false, mtm);
+    l.setTextColor(Some(&NSColor::linkColor()));
+    l.setFrame(rect(x, (top - 20.0).max(inner.origin.y), w, 18.0));
+    parent.addSubview(&l);
+}
 
 define_class!(
     #[unsafe(super(NSPanel))]
@@ -58,7 +100,14 @@ impl Preview {
     }
 
     /// Shows `item` centered above `shelf_frame`.
-    pub fn show(&mut self, item: &Item, image: Option<Retained<NSImage>>, shelf_frame: NSRect, mtm: MainThreadMarker) {
+    pub fn show(
+        &mut self,
+        item: &Item,
+        image: Option<Retained<NSImage>>,
+        link: Option<LinkPreview>,
+        shelf_frame: NSRect,
+        mtm: MainThreadMarker,
+    ) {
         let (w, h) = (680.0f64.min(shelf_frame.size.width - 40.0), 460.0);
         let x = shelf_frame.origin.x + (shelf_frame.size.width - w) / 2.0;
         let y = shelf_frame.origin.y + shelf_frame.size.height + 12.0;
@@ -74,6 +123,7 @@ impl Preview {
         }
         let inner = rect(16.0, 16.0, w - 32.0, h - 32.0);
         match (item.kind, image) {
+            (ItemKind::Link, _) => link_layout(&effect, item, link.as_ref(), inner, mtm),
             (ItemKind::Image, Some(image)) => {
                 let iv = NSImageView::imageViewWithImage(&image, mtm);
                 iv.setImageScaling(NSImageScaling::ScaleProportionallyDown);

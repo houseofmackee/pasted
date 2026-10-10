@@ -178,6 +178,9 @@ impl Target {
     }
 }
 
+/// Mirrors the `link_previews` setting for the background fetcher.
+static LINK_PREVIEWS_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 type ImportResult = Arc<Mutex<Option<Result<String, String>>>>;
 
 /// Paste Stack: copies are queued and each Cmd+V pastes the next one.
@@ -373,6 +376,7 @@ pub fn run() -> Result<()> {
         dialogs::info("Settings file has an error", &format!("Using defaults until it is fixed.\n\n{e}"), mtm);
     }
     crate::ocr::spawn_worker();
+    crate::link_preview::spawn_worker(&LINK_PREVIEWS_ENABLED);
     offer_first_run_import();
     tracing::info!("Pasted is running");
     app.run();
@@ -422,6 +426,7 @@ fn install_main_menu(mtm: MainThreadMarker) {
 
 impl App {
     fn apply_settings(&mut self) {
+        LINK_PREVIEWS_ENABLED.store(self.settings.general.link_previews, std::sync::atomic::Ordering::Relaxed);
         self.filter = PrivacyFilter::new(&self.settings.privacy);
         self.shelf.set_visible_in_screen_sharing(self.settings.privacy.visible_during_screen_sharing);
         let s = &self.settings.shortcuts;
@@ -778,7 +783,11 @@ impl App {
         } else {
             None
         };
-        self.preview.show(&item, image, self.shelf.panel.frame(), self.mtm);
+        let link = match (&item.kind, &item.meta.url) {
+            (ItemKind::Link, Some(url)) => self.store.link_preview(url).ok().flatten(),
+            _ => None,
+        };
+        self.preview.show(&item, image, link, self.shelf.panel.frame(), self.mtm);
     }
 
     fn open_item(&mut self, id: i64) {

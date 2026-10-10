@@ -131,6 +131,46 @@ fn from_json(value: &serde_json::Value) -> Result<Vec<Representation>> {
     }))
 }
 
+/// Paste's stored link preview (`ZRAWPREVIEW`): `urlName`, `urlImageData` and
+/// `urlIconData`, as JSON (older versions, data base64 encoded) or a binary plist.
+pub fn decode_preview(raw: &[u8], external_dir: &Path) -> Option<crate::link_preview::LinkPreview> {
+    let body: Vec<u8> = match raw.first()? {
+        0x02 => {
+            let end = raw.iter().position(|&b| b == 0).unwrap_or(raw.len());
+            let name = std::str::from_utf8(&raw[1..end]).ok()?;
+            if name.contains('/') || name.contains("..") {
+                return None;
+            }
+            std::fs::read(external_dir.join(name)).ok()?
+        }
+        0x01 => raw[1..].to_vec(),
+        _ => raw.to_vec(),
+    };
+    let mut p = crate::link_preview::LinkPreview::default();
+    let bytes_of_json = |v: &serde_json::Value| {
+        v.as_str().and_then(|s| base64::engine::general_purpose::STANDARD.decode(s).ok()).filter(|b| !b.is_empty())
+    };
+    if body.starts_with(b"bplist") {
+        let value = plist::Value::from_reader(std::io::Cursor::new(&body)).ok()?;
+        let dict = value.as_dictionary()?;
+        let data = |k: &str| match dict.get(k) {
+            Some(plist::Value::Data(d)) if !d.is_empty() => Some(d.clone()),
+            Some(plist::Value::String(s)) => base64::engine::general_purpose::STANDARD.decode(s).ok(),
+            _ => None,
+        };
+        p.title = dict.get("urlName").and_then(|v| v.as_string()).map(str::to_string);
+        p.image = data("urlImageData");
+        p.icon = data("urlIconData");
+    } else {
+        let v: serde_json::Value = serde_json::from_slice(&body).ok()?;
+        p.title = v.get("urlName").and_then(|n| n.as_str()).map(str::to_string);
+        p.image = v.get("urlImageData").and_then(bytes_of_json);
+        p.icon = v.get("urlIconData").and_then(bytes_of_json);
+    }
+    p.title = p.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    Some(p)
+}
+
 /// Text from Paste's OCR metadata: `{"words":[{"string":..,"confidence":..}]}`.
 pub fn ocr_text(metadata: &[u8]) -> Option<String> {
     let v: serde_json::Value = serde_json::from_slice(metadata).ok()?;
@@ -198,6 +238,26 @@ mod tests {
         let mut evil = vec![2];
         evil.extend(b"../etc/passwd\0");
         assert!(decode_item_blob(&evil, dir.path()).is_err());
+    }
+
+    #[test]
+    fn previews() {
+        let mut d = plist::Dictionary::new();
+        d.insert("type".into(), "link".into());
+        d.insert("urlName".into(), " Example Site ".into());
+        d.insert("urlIconData".into(), plist::Value::Data(vec![1, 2, 3]));
+        let mut raw = vec![1];
+        plist::Value::Dictionary(d).to_writer_binary(&mut raw).unwrap();
+        let p = decode_preview(&raw, Path::new("/nonexistent")).unwrap();
+        assert_eq!(p.title.as_deref(), Some("Example Site"));
+        assert_eq!(p.icon, Some(vec![1, 2, 3]));
+        assert!(p.image.is_none());
+
+        let json = br#"{"type":"link","url":"https://x.com","urlName":"X","urlImageData":"AQID"}"#;
+        let mut raw = vec![1];
+        raw.extend_from_slice(json);
+        let p = decode_preview(&raw, Path::new("/nonexistent")).unwrap();
+        assert_eq!((p.title.as_deref(), p.image), (Some("X"), Some(vec![1, 2, 3])));
     }
 
     #[test]

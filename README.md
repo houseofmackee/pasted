@@ -2,7 +2,7 @@
 
 A fast, private clipboard manager for macOS, written in Rust. Inspired by [Paste](https://pasteapp.io), with history import from an existing Paste installation.
 
-Everything stays on your Mac: no accounts, no telemetry, no network access.
+Everything stays on your Mac: no accounts and no telemetry. The only network access is fetching link previews, which you can turn off.
 
 ## Features
 
@@ -10,6 +10,7 @@ Everything stays on your Mac: no accounts, no telemetry, no network access.
 - Text, rich text, links, images, files, colors and code, each with its own card
 - Instant search with filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
+- Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -61,6 +62,7 @@ pasted board list
 pasted import paste --dry-run     # preview an import from Paste
 pasted open                       # show the shelf of the running app
 pasted settings --tab privacy     # show a Settings tab
+pasted preview <url>              # fetch a link preview (debugging)
 pasted stats
 pasted paths
 ```
@@ -70,6 +72,8 @@ Use `--json` with `list` and `search` for machine readable output.
 ## Importing from Paste
 
 Choose **Import from Paste…** in the menu bar menu, or run `pasted import paste`. On first launch with an empty history, Pasted offers the import automatically.
+
+Link previews Paste already stored (titles, images, icons) come along, so those links are not fetched again.
 
 The importer copies Paste's database to a temporary directory and reads the copy, so Paste's own files are never modified. Running it again only adds items that are new since the last import. History retention and shortcuts are taken from Paste's settings. Quit Paste first for the most complete import.
 
@@ -92,6 +96,7 @@ paste_plain_text_by_default = false
 paste_directly = true
 sounds = false
 launch_at_login = false
+link_previews = true
 
 [shortcuts]
 open_shelf = "shift+cmd+v"

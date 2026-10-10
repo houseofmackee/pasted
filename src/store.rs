@@ -16,7 +16,8 @@ const INLINE_LIMIT: usize = 32 * 1024;
 /// Only the first part of very long text is indexed for search.
 const FTS_TEXT_LIMIT: usize = 200_000;
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE apps (
     id INTEGER PRIMARY KEY,
     bundle_id TEXT NOT NULL UNIQUE,
@@ -83,7 +84,23 @@ CREATE TABLE import_runs (
     skipped INTEGER NOT NULL DEFAULT 0,
     failed INTEGER NOT NULL DEFAULT 0
 );
-"#];
+"#,
+    r#"
+CREATE TABLE link_previews (
+    url TEXT PRIMARY KEY,
+    title TEXT,
+    description TEXT,
+    image BLOB,
+    icon BLOB,
+    status TEXT NOT NULL,
+    fetched_at INTEGER NOT NULL
+);
+CREATE INDEX items_link_url ON items(json_extract(meta, '$.url')) WHERE kind = 'link';
+"#,
+];
+
+/// Failed link previews are retried after this long.
+const PREVIEW_RETRY_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 /// Pinboard colors (ARGB), similar to Paste's palette.
 pub const PINBOARD_COLORS: &[u32] = &[
@@ -232,8 +249,13 @@ impl Store {
         self.conn.execute("DELETE FROM items_fts WHERE rowid = ?1", [id])?;
         self.conn.execute(
             "INSERT INTO items_fts (rowid, title, text, ocr, app)
-             SELECT i.id, coalesce(i.title, ''), substr(i.text, 1, ?2), coalesce(o.text, ''), coalesce(a.name, '')
-             FROM items i LEFT JOIN ocr o ON o.item_id = i.id LEFT JOIN apps a ON a.id = i.app_id
+             SELECT i.id, coalesce(i.title, ''), substr(i.text, 1, ?2),
+                    coalesce(o.text, '') || ' ' || coalesce(lp.title, '') || ' ' || coalesce(lp.description, ''),
+                    coalesce(a.name, '')
+             FROM items i
+             LEFT JOIN ocr o ON o.item_id = i.id
+             LEFT JOIN apps a ON a.id = i.app_id
+             LEFT JOIN link_previews lp ON i.kind = 'link' AND lp.url = json_extract(i.meta, '$.url')
              WHERE i.id = ?1",
             params![id, FTS_TEXT_LIMIT as i64],
         )?;
@@ -510,10 +532,72 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn has_external_id(&self, external_id: &str) -> Result<bool> {
+    // Link previews
+
+    /// Link URLs without a preview (or whose last attempt failed long ago), newest first.
+    pub fn links_needing_preview(&self, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT url FROM (
+                 SELECT json_extract(meta, '$.url') AS url, max(timestamp) AS ts
+                 FROM items WHERE kind = 'link' GROUP BY 1
+             )
+             WHERE url IS NOT NULL
+               AND url NOT IN (SELECT url FROM link_previews WHERE status = 'ok' OR fetched_at > ?1)
+             ORDER BY ts DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![now_ms() - PREVIEW_RETRY_MS, limit as i64], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_link_preview(&self, p: &crate::link_preview::LinkPreview, status: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO link_previews (url, title, description, image, icon, status, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![p.url, p.title, p.description, p.image, p.icon, status, now_ms()],
+        )?;
+        self.reindex_url(&p.url)
+    }
+
+    /// Stores a preview from an import unless one already exists.
+    pub fn import_link_preview(&self, p: &crate::link_preview::LinkPreview) -> Result<bool> {
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO link_previews (url, title, description, image, icon, status, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'ok', ?6)",
+            params![p.url, p.title, p.description, p.image, p.icon, now_ms()],
+        )?;
+        if n > 0 {
+            self.reindex_url(&p.url)?;
+        }
+        Ok(n > 0)
+    }
+
+    fn reindex_url(&self, url: &str) -> Result<()> {
+        let mut stmt =
+            self.conn.prepare("SELECT id FROM items WHERE kind = 'link' AND json_extract(meta, '$.url') = ?1")?;
+        let ids: Vec<i64> = stmt.query_map([url], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for id in ids {
+            self.reindex(id)?;
+        }
+        Ok(())
+    }
+
+    pub fn link_preview(&self, url: &str) -> Result<Option<crate::link_preview::LinkPreview>> {
         Ok(self
             .conn
-            .query_row("SELECT EXISTS(SELECT 1 FROM items WHERE external_id = ?1)", [external_id], |r| r.get(0))?)
+            .query_row(
+                "SELECT url, title, description, image, icon FROM link_previews WHERE url = ?1 AND status = 'ok'",
+                [url],
+                |r| {
+                    Ok(crate::link_preview::LinkPreview {
+                        url: r.get(0)?,
+                        title: r.get(1)?,
+                        description: r.get(2)?,
+                        image: r.get(3)?,
+                        icon: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
     }
 
     pub fn item_by_external_id(&self, external_id: &str) -> Result<Option<i64>> {
@@ -821,6 +905,34 @@ pub mod tests {
         assert_eq!(item.title.as_deref(), Some("Greeting"));
         assert_eq!(s.search(&Query::text("greet"), 10, 0).unwrap().len(), 1);
         assert_eq!(s.search(&Query::text("hello"), 10, 0).unwrap().len(), 0);
+    }
+
+    #[test]
+    fn link_previews_are_searchable_and_queued() {
+        let (_d, mut s) = temp_store();
+        s.insert(&text_item("https://example.com/a", 1), true).unwrap();
+        s.insert(&text_item("https://example.com/b", 2), true).unwrap();
+        s.insert(&text_item("plain words", 3), true).unwrap();
+        assert_eq!(s.links_needing_preview(10).unwrap(), ["https://example.com/b", "https://example.com/a"]);
+        let p = crate::link_preview::LinkPreview {
+            url: "https://example.com/a".into(),
+            title: Some("Quarterly Roadmap".into()),
+            ..Default::default()
+        };
+        s.set_link_preview(&p, "ok").unwrap();
+        s.set_link_preview(
+            &crate::link_preview::LinkPreview { url: "https://example.com/b".into(), ..Default::default() },
+            "failed",
+        )
+        .unwrap();
+        assert!(s.links_needing_preview(10).unwrap().is_empty());
+        assert_eq!(s.search(&Query::text("roadmap"), 10, 0).unwrap().len(), 1);
+        assert_eq!(
+            s.link_preview("https://example.com/a").unwrap().unwrap().title.as_deref(),
+            Some("Quarterly Roadmap")
+        );
+        assert!(s.link_preview("https://example.com/b").unwrap().is_none());
+        assert!(!s.import_link_preview(&p).unwrap());
     }
 
     #[test]

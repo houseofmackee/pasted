@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension};
 
-use super::decode::{decode_item_blob, ocr_text};
+use super::decode::{decode_item_blob, decode_preview, ocr_text};
 use crate::clipboard::classify::classify;
 use crate::model::{ItemKind, ItemMeta, NewItem, SourceApp};
 use crate::settings::{Retention, Settings};
@@ -84,6 +84,7 @@ pub struct ImportReport {
     pub items_failed: usize,
     pub pinboards_created: usize,
     pub ocr_imported: usize,
+    pub previews_imported: usize,
     pub settings_changed: Vec<String>,
     /// Imported history items older than the retention setting; they will be
     /// removed by the next cleanup unless retention is raised.
@@ -107,6 +108,7 @@ impl ImportReport {
             format!("Failed: {}", self.items_failed),
             format!("Pinboards created: {}", self.pinboards_created),
             format!("OCR texts imported: {}", self.ocr_imported),
+            format!("Link previews imported: {}", self.previews_imported),
         ];
         if self.items_beyond_retention > 0 {
             lines.push(format!(
@@ -278,7 +280,8 @@ fn import_items(
     let mut stmt = db.prepare(
         "SELECT i.ZIDENTIFIER, i.ZRAWTYPE, i.ZTITLE, i.ZTIMESTAMP, i.ZCREATEDAT, i.ZLIST,
                 i.ZDISPLAYORDERINPINBOARD, a.ZBUNDLEIDENTIFIER, a.ZNAME, dev.ZNAME,
-                (SELECT d.ZRAWPASTEBOARDITEMS FROM ZITEMDATAENTITY d WHERE d.ZITEM = i.Z_PK OR d.Z_PK = i.ZDATA LIMIT 1)
+                (SELECT d.ZRAWPASTEBOARDITEMS FROM ZITEMDATAENTITY d WHERE d.ZITEM = i.Z_PK OR d.Z_PK = i.ZDATA LIMIT 1),
+                i.ZRAWPREVIEW
          FROM ZITEMENTITY i
          LEFT JOIN ZAPPLICATIONENTITY a ON a.Z_PK = i.ZSOURCEAPPLICATION
          LEFT JOIN ZDEVICEENTITY dev ON dev.Z_PK = i.ZDEVICE
@@ -293,8 +296,15 @@ fn import_items(
             continue;
         };
         let external_id = format!("paste:item:{identifier}");
-        if store.has_external_id(&external_id)? {
+        let preview_raw = bytes_col(r, 11)?;
+        if let Some(id) = store.item_by_external_id(&external_id)? {
             report.items_already_present += 1;
+            // Earlier imports did not bring previews; fill them in.
+            if !opts.dry_run
+                && let Some(url) = store.get(id)?.and_then(|i| i.meta.url)
+            {
+                import_preview(store, &url, preview_raw.as_deref(), external_dir, report)?;
+            }
             continue;
         }
         let raw_type: Option<i64> = r.get(1)?;
@@ -352,6 +362,9 @@ fn import_items(
             in_history: board.is_none(),
         };
         let id = store.insert(&item, false)?.id();
+        if let (ItemKind::Link, Some(url)) = (item.kind, &item.meta.url) {
+            import_preview(store, url, preview_raw.as_deref(), external_dir, report)?;
+        }
         if let Some(board) = board {
             store.pin(id, board, pin_order)?;
         }
@@ -359,6 +372,25 @@ fn import_items(
         if report.items_imported.is_multiple_of(100) {
             store.commit_progress()?;
         }
+    }
+    Ok(())
+}
+
+fn import_preview(
+    store: &Store,
+    url: &str,
+    raw: Option<&[u8]>,
+    external_dir: &Path,
+    report: &mut ImportReport,
+) -> Result<()> {
+    let Some(p) = raw.and_then(|raw| decode_preview(raw, external_dir)) else { return Ok(()) };
+    if p.title.is_none() && p.image.is_none() {
+        // Nothing useful; let the fetcher try instead.
+        return Ok(());
+    }
+    let preview = crate::link_preview::LinkPreview { url: url.to_string(), ..p };
+    if store.import_link_preview(&preview)? {
+        report.previews_imported += 1;
     }
     Ok(())
 }
@@ -477,7 +509,7 @@ mod tests {
             CREATE TABLE ZLISTMETADATAENTITY (Z_PK INTEGER PRIMARY KEY, ZINDEX INTEGER, ZLIST INTEGER);
             CREATE TABLE ZITEMENTITY (Z_PK INTEGER PRIMARY KEY, ZDISPLAYORDERINPINBOARD INTEGER, ZRAWTYPE INTEGER,
                 ZDATA INTEGER, ZDEVICE INTEGER, ZLIST INTEGER, ZSOURCEAPPLICATION INTEGER, ZCREATEDAT TIMESTAMP,
-                ZTIMESTAMP TIMESTAMP, ZIDENTIFIER VARCHAR, ZTITLE VARCHAR);
+                ZTIMESTAMP TIMESTAMP, ZIDENTIFIER VARCHAR, ZTITLE VARCHAR, ZRAWPREVIEW BLOB);
             CREATE TABLE ZITEMDATAENTITY (Z_PK INTEGER PRIMARY KEY, ZITEM INTEGER, ZRAWPASTEBOARDITEMS BLOB);
             INSERT INTO ZAPPLICATIONENTITY VALUES (1, 'com.example.editor', 'Editor');
             INSERT INTO ZDEVICEENTITY VALUES (1, 'Test Mac');
@@ -518,6 +550,9 @@ mod tests {
             .unwrap();
             db.execute("INSERT INTO ZITEMDATAENTITY VALUES (?1, ?1, ?2)", rusqlite::params![pk, json(text)]).unwrap();
         }
+        let mut preview = vec![1u8];
+        preview.extend_from_slice(br#"{"type":"link","url":"https://example.com","urlName":"Example Domain Page"}"#);
+        db.execute("UPDATE ZITEMENTITY SET ZRAWPREVIEW = ?1 WHERE Z_PK = 2", [preview]).unwrap();
         // A broken item must be reported, not abort the import.
         db.execute(
             "INSERT INTO ZITEMENTITY (Z_PK, ZIDENTIFIER, ZTIMESTAMP, ZLIST) VALUES (4, 'item-4', 700000300, 1)",
@@ -548,6 +583,8 @@ mod tests {
         assert_eq!(report.items_failed, 1);
         assert_eq!(report.pinboards_created, 1);
         assert_eq!(report.ocr_imported, 1);
+        assert_eq!(report.previews_imported, 1);
+        assert_eq!(store.search(&Query::text("domain page"), 10, 0).unwrap().len(), 1);
         assert_eq!(settings.general.history_retention, Retention::Year);
         // Fixture timestamps are from 2023, older than a year.
         assert_eq!(report.items_beyond_retention, 2);

@@ -14,6 +14,7 @@ use objc2_foundation::{MainThreadMarker, NSArray, NSObjectProtocol};
 use super::icons::{AppLook, IconCache};
 use super::{label, rect, wrapping_label};
 use crate::clipboard::classify::parse_color;
+use crate::link_preview::LinkPreview;
 use crate::model::{Item, ItemKind, relative_time, truncate_chars};
 
 pub const CARD_W: f64 = 232.0;
@@ -122,7 +123,28 @@ pub struct CardContent<'a> {
     pub item: &'a Item,
     pub index: usize,
     pub image: Option<Retained<NSImage>>,
+    pub link: Option<LinkPreview>,
     pub shortcut_number: Option<usize>,
+}
+
+pub fn image_from(data: &[u8]) -> Option<Retained<NSImage>> {
+    NSImage::initWithData(NSImage::alloc(), &objc2_foundation::NSData::with_bytes(data))
+}
+
+/// A view that fills `frame` with `image`, cropping instead of letterboxing.
+pub fn cover_view(image: &NSImage, frame: objc2_foundation::NSRect, mtm: MainThreadMarker) -> Retained<NSView> {
+    let v = NSView::initWithFrame(NSView::alloc(mtm), frame);
+    v.setWantsLayer(true);
+    if let Some(layer) = v.layer() {
+        // SAFETY: CALayer accepts an NSImage as contents on macOS; the gravity is a CA constant.
+        unsafe {
+            layer.setContents(Some(image));
+            layer.setContentsGravity(objc2_quartz_core::kCAGravityResizeAspectFill);
+        }
+        layer.setMasksToBounds(true);
+        layer.setCornerRadius(6.0);
+    }
+    v
 }
 
 fn footer_text(item: &Item) -> String {
@@ -231,19 +253,38 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
             card.addSubview(&l);
         }
         ItemKind::Link => {
-            let name = item.meta.url_name.clone().or_else(|| item.title.clone()).unwrap_or_default();
+            let preview = content.link.as_ref();
+            let name = item
+                .title
+                .clone()
+                .or_else(|| preview.and_then(|p| p.title.clone()))
+                .or_else(|| item.meta.url_name.clone())
+                .unwrap_or_default();
             let url = item.meta.url.clone().unwrap_or_else(|| item.text.trim().to_string());
+            let image = preview.and_then(|p| p.image.as_deref()).and_then(image_from);
             let mut y = body_y;
-            if !name.is_empty() {
-                let l = wrapping_label(&name, &NSFont::boldSystemFontOfSize(13.0), 3, mtm);
-                l.setFrame(rect(PAD, top(y, 54.0), w - PAD * 2.0, 54.0));
-                card.addSubview(&l);
-                y += 58.0;
+            if let Some(image) = &image {
+                let h = 92.0;
+                card.addSubview(&cover_view(image, rect(PAD, top(y, h), w - PAD * 2.0, h), mtm));
+                y += h + 8.0;
             }
-            let l = wrapping_label(&truncate_chars(&url, 400), &NSFont::systemFontOfSize(12.0), 6, mtm);
-            l.setTextColor(Some(&NSColor::linkColor()));
-            l.setFrame(rect(PAD, top(y, body_h - (y - body_y)), w - PAD * 2.0, body_h - (y - body_y)));
-            card.addSubview(&l);
+            if !name.is_empty() {
+                let (lines, max_h) = if image.is_some() { (2, 34.0) } else { (3, 52.0) };
+                let l = wrapping_label(&name, &NSFont::boldSystemFontOfSize(13.0), lines, mtm);
+                l.setPreferredMaxLayoutWidth(w - PAD * 2.0);
+                let h = l.fittingSize().height.clamp(17.0, max_h);
+                l.setFrame(rect(PAD, top(y, h), w - PAD * 2.0, h));
+                card.addSubview(&l);
+                y += h + 4.0;
+            }
+            let rest = body_h - (y - body_y);
+            if rest >= 16.0 {
+                let lines = ((rest / 15.0).floor() as isize).max(1);
+                let l = wrapping_label(&truncate_chars(&url, 400), &NSFont::systemFontOfSize(12.0), lines, mtm);
+                l.setTextColor(Some(&NSColor::linkColor()));
+                l.setFrame(rect(PAD, top(y, rest), w - PAD * 2.0, rest));
+                card.addSubview(&l);
+            }
         }
         ItemKind::Text | ItemKind::RichText | ItemKind::Code => {
             let font = if item.kind == ItemKind::Code {
@@ -260,9 +301,17 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
     }
 
     // Footer.
+    let mut footer_x = PAD;
+    if let Some(icon) = content.link.as_ref().and_then(|p| p.icon.as_deref()).and_then(image_from) {
+        let iv = NSImageView::imageViewWithImage(&icon, mtm);
+        iv.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+        iv.setFrame(rect(PAD, 6.0, 16.0, 16.0));
+        card.addSubview(&iv);
+        footer_x += 21.0;
+    }
     let footer = label(&footer_text(item), 11.0, false, mtm);
     footer.setTextColor(Some(&NSColor::secondaryLabelColor()));
-    footer.setFrame(rect(PAD, 6.0, w - PAD * 2.0 - 34.0, 16.0));
+    footer.setFrame(rect(footer_x, 6.0, w - footer_x - PAD - 34.0, 16.0));
     card.addSubview(&footer);
     if let Some(n) = content.shortcut_number {
         let k = label(&format!("\u{2318}{n}"), 11.0, false, mtm);

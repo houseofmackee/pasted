@@ -353,7 +353,11 @@ impl Shelf {
         for i in self.cards.len()..=upto {
             let item = self.items[i].clone();
             let image = self.image_for(&item, store);
-            let content = CardContent { item: &item, index: i, image, shortcut_number: (i < 9).then_some(i + 1) };
+            let link = match (&item.kind, &item.meta.url) {
+                (ItemKind::Link, Some(url)) => store.link_preview(url).ok().flatten(),
+                _ => None,
+            };
+            let content = CardContent { item: &item, index: i, image, link, shortcut_number: (i < 9).then_some(i + 1) };
             let card = card::build(content, &mut self.icons, self.mtm);
             card.setFrame(rect(16.0 + i as f64 * (CARD_W + GAP), y, CARD_W, CARD_H));
             if i == self.selected {

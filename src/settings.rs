@@ -51,6 +51,8 @@ pub struct General {
     pub paste_directly: bool,
     pub sounds: bool,
     pub launch_at_login: bool,
+    /// Fetch page titles and images for copied links (the only network access).
+    pub link_previews: bool,
 }
 
 impl Default for General {
@@ -62,6 +64,7 @@ impl Default for General {
             paste_directly: true,
             sounds: false,
             launch_at_login: false,
+            link_previews: true,
         }
     }
 }

@@ -6,6 +6,7 @@ mod cli;
 mod clipboard;
 mod hotkeys;
 mod import;
+mod link_preview;
 mod login_item;
 mod model;
 mod ocr;

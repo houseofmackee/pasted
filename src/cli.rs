@@ -74,6 +74,8 @@ pub enum Command {
     Import(ImportCommand),
     /// Delete history older than the retention setting and unused blob files.
     Prune,
+    /// Fetch and print a link preview (debugging aid; nothing is stored).
+    Preview { url: String },
     /// Show storage statistics.
     Stats,
     /// Print data file locations.
@@ -276,6 +278,23 @@ pub fn run(command: Command) -> Result<()> {
             let items = store.prune(settings.general.history_retention, now_ms())?;
             let blobs = store.collect_garbage()?;
             println!("Removed {items} items and {blobs} blob files");
+        }
+        Command::Preview { url } => {
+            let parsed = url::Url::parse(&url)?;
+            if !crate::link_preview::is_fetchable(&parsed) {
+                bail!("only public http(s) URLs are fetched");
+            }
+            let p = crate::link_preview::fetch(&url)?;
+            println!("title:       {}", p.title.as_deref().unwrap_or("(none)"));
+            println!("description: {}", p.description.as_deref().unwrap_or("(none)"));
+            println!(
+                "image:       {}",
+                p.image.as_ref().map(|i| format!("{} bytes", i.len())).unwrap_or("(none)".into())
+            );
+            println!(
+                "icon:        {}",
+                p.icon.as_ref().map(|i| format!("{} bytes", i.len())).unwrap_or("(none)".into())
+            );
         }
         Command::Stats => {
             let s = store.stats()?;
