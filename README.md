@@ -60,6 +60,7 @@ pasted pin 42 Snippets            # pin (creates the pinboard if needed)
 pasted board list
 pasted import paste --dry-run     # preview an import from Paste
 pasted open                       # show the shelf of the running app
+pasted settings --tab privacy     # show a Settings tab
 pasted stats
 pasted paths
 ```
@@ -74,7 +75,14 @@ The importer copies Paste's database to a temporary directory and reads the copy
 
 ## Settings
 
-Settings live in `~/Library/Application Support/Pasted/settings.toml`. Choose **Open Settings File** from the menu bar menu, edit, then choose **Reload Settings**.
+Choose **Settings…** in the menu bar menu or press ⌘, in the shelf. The window has four tabs:
+
+- **General**: history retention, size limit, direct pasting, plain text default, sounds, launch at login, Accessibility status
+- **Shortcuts**: click a field and press a new combination (global shortcuts are paused while recording)
+- **Privacy**: confidential content, secret detection, screen sharing visibility, apps to ignore, ignore patterns
+- **Data**: storage statistics, Paste import, clear history, data folder
+
+Changes apply immediately and are saved to `~/Library/Application Support/Pasted/settings.toml`. The file can also be edited by hand; Pasted notices the change within a couple of seconds.
 
 ```toml
 [general]

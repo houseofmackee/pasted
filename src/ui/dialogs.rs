@@ -2,9 +2,7 @@
 //! run, since the modal loop keeps dispatching events.
 
 use objc2::MainThreadOnly;
-use objc2_app_kit::{
-    NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSApplication, NSFont, NSScrollView, NSTextField, NSTextView,
-};
+use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSFont, NSScrollView, NSTextField, NSTextView};
 use objc2_foundation::MainThreadMarker;
 
 use super::{ns, rect};
@@ -16,7 +14,7 @@ fn alert(title: &str, message: &str, buttons: &[&str], mtm: MainThreadMarker) ->
     for b in buttons {
         a.addButtonWithTitle(&ns(b));
     }
-    NSApplication::sharedApplication(mtm).activate();
+    super::activate_app(mtm);
     a
 }
 

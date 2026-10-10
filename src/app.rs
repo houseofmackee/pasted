@@ -18,12 +18,13 @@ use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSButton, NSControl,
     NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSImage, NSMenu,
-    NSMenuItem, NSPasteboard, NSPasteboardItem, NSResponder, NSRunningApplication, NSSearchFieldDelegate, NSSound,
-    NSStatusBar, NSStatusItem, NSTextFieldDelegate, NSTextView, NSWindowDelegate, NSWorkspace,
+    NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardItem, NSResponder, NSRunningApplication,
+    NSSearchFieldDelegate, NSSound, NSStatusBar, NSStatusItem, NSTextFieldDelegate, NSTextView, NSWindowDelegate,
+    NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSData, NSDistributedNotificationCenter, NSNotification, NSObject, NSObjectProtocol,
-    NSTimer, NSURL,
+    MainThreadMarker, NSArray, NSBundle, NSData, NSDistributedNotificationCenter, NSNotification, NSObject,
+    NSObjectProtocol, NSString, NSTimer, NSURL,
 };
 
 use crate::clipboard::capture::{Capture, capture};
@@ -35,6 +36,7 @@ use crate::model::{IMAGE_UTIS, ItemKind, now_ms};
 use crate::settings::Settings;
 use crate::store::Store;
 use crate::ui::preview::Preview;
+use crate::ui::settings_window::{self, SettingsWindow};
 use crate::ui::shelf::{self, Shelf, menu_item, tag, untag};
 use crate::ui::stack_panel::StackPanel;
 use crate::ui::{dialogs, ns};
@@ -44,12 +46,15 @@ const OPEN_SHELF: u8 = 10;
 const TOGGLE_PAUSE: u8 = 11;
 const IMPORT_PASTE: u8 = 12;
 const OPEN_SETTINGS: u8 = 13;
-const RELOAD_SETTINGS: u8 = 14;
 const ACCESSIBILITY: u8 = 15;
 const ABOUT: u8 = 16;
 const QUIT: u8 = 17;
 const CLEAR_HISTORY: u8 = 18;
 const PASTE_STACK: u8 = 19;
+const SETTINGS: u8 = 20;
+pub const IMPORT_PASTE_TAG: u8 = IMPORT_PASTE;
+pub const CLEAR_HISTORY_TAG: u8 = CLEAR_HISTORY;
+pub const OPEN_SETTINGS_TAG: u8 = OPEN_SETTINGS;
 const ITEM_PASTE: u8 = 30;
 const ITEM_PASTE_PLAIN: u8 = 31;
 const ITEM_COPY: u8 = 32;
@@ -65,6 +70,8 @@ const ITEM_OPEN: u8 = 40;
 const POLL_INTERVAL: f64 = 0.3;
 /// Posted by `pasted open` to show the shelf of the running app.
 pub const OPEN_NOTIFICATION: &str = "io.pasted.app.open";
+/// Posted by `pasted settings` to show the Settings window.
+pub const SETTINGS_NOTIFICATION: &str = "io.pasted.app.settings";
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(3600);
 
 define_class!(
@@ -89,11 +96,32 @@ define_class!(
             dispatch(sender.tag());
         }
 
+        #[unsafe(method(buttonAction:))]
+        fn button_action(&self, sender: &NSButton) {
+            dispatch(sender.tag());
+        }
+
+        #[unsafe(method(settingsChanged:))]
+        fn settings_changed(&self, _sender: Option<&AnyObject>) {
+            settings_ui_changed();
+        }
+
         #[unsafe(method(remoteOpen:))]
         fn remote_open(&self, _notification: &NSNotification) {
             with(|app| {
                 if !app.shelf.is_visible() {
                     app.open_shelf();
+                }
+            });
+        }
+
+        #[unsafe(method(remoteSettings:))]
+        fn remote_settings(&self, notification: &NSNotification) {
+            let tab = notification.object().and_then(|o| o.downcast::<NSString>().ok()).map(|s| s.to_string());
+            with(|app| {
+                app.open_settings();
+                if let (Some(tab), Some(win)) = (tab, &app.settings_window) {
+                    win.select_tab(&tab);
                 }
             });
         }
@@ -135,6 +163,11 @@ define_class!(
         #[unsafe(method(windowDidResignKey:))]
         fn window_did_resign_key(&self, _notification: &NSNotification) {
             shelf_resigned();
+        }
+
+        #[unsafe(method(windowDidBecomeKey:))]
+        fn window_did_become_key(&self, _notification: &NSNotification) {
+            with(|app| app.refresh_settings_window());
         }
     }
 );
@@ -178,6 +211,11 @@ pub struct App {
     last_maintenance: Instant,
     import_job: Option<ImportResult>,
     stack: Option<PasteStack>,
+    settings_window: Option<SettingsWindow>,
+    /// Modification time of settings.toml when last read or written, to
+    /// notice hand edits.
+    settings_mtime: Option<std::time::SystemTime>,
+    last_settings_check: Instant,
 }
 
 thread_local! {
@@ -287,6 +325,9 @@ pub fn run() -> Result<()> {
         last_maintenance: Instant::now() - MAINTENANCE_INTERVAL,
         import_job: None,
         stack: None,
+        settings_window: None,
+        settings_mtime: settings_mtime(),
+        last_settings_check: Instant::now(),
         store,
         settings,
         status_item,
@@ -314,6 +355,15 @@ pub fn run() -> Result<()> {
                 &app.target,
                 sel!(remoteOpen:),
                 Some(&ns(OPEN_NOTIFICATION)),
+                None,
+            )
+        };
+        // SAFETY: as above.
+        unsafe {
+            NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &app.target,
+                sel!(remoteSettings:),
+                Some(&ns(SETTINGS_NOTIFICATION)),
                 None,
             )
         };
@@ -350,6 +400,20 @@ fn install_main_menu(mtm: MainThreadMarker) {
     }
     let app_item = NSMenuItem::new(mtm);
     main.addItem(&app_item);
+    let file = NSMenu::initWithTitle(NSMenu::alloc(mtm), &ns("File"));
+    // SAFETY: standard responder chain selector.
+    let close = unsafe {
+        NSMenuItem::initWithTitle_action_keyEquivalent(
+            NSMenuItem::alloc(mtm),
+            &ns("Close"),
+            Some(sel!(performClose:)),
+            &ns("w"),
+        )
+    };
+    file.addItem(&close);
+    let file_item = NSMenuItem::new(mtm);
+    file_item.setSubmenu(Some(&file));
+    main.addItem(&file_item);
     let edit_item = NSMenuItem::new(mtm);
     edit_item.setSubmenu(Some(&edit));
     main.addItem(&edit_item);
@@ -363,12 +427,101 @@ impl App {
         let s = &self.settings.shortcuts;
         let failed =
             self.hotkeys.set(&[(HotkeyAction::OpenShelf, s.open_shelf), (HotkeyAction::PasteStack, s.paste_stack)]);
-        for f in failed {
+        for f in &failed {
             tracing::warn!("shortcut {f} is unavailable");
         }
-        if let Some(problem) = crate::login_item::sync(self.settings.general.launch_at_login) {
+        let login_problem = crate::login_item::sync(self.settings.general.launch_at_login);
+        if let Some(problem) = &login_problem {
             tracing::warn!("{problem}");
         }
+        if let Some(win) = &self.settings_window {
+            win.set_shortcut_warning(&failed);
+            win.set_login_note(login_problem.as_deref());
+        }
+    }
+
+    /// Writes settings to disk and applies them.
+    fn save_settings(&mut self) {
+        match crate::paths::settings_path().and_then(|p| self.settings.save(&p)) {
+            Ok(()) => self.settings_mtime = settings_mtime(),
+            Err(e) => tracing::error!("saving settings failed: {e:#}"),
+        }
+        self.apply_settings();
+        self.rebuild_status_menu();
+    }
+
+    /// Picks up hand edits to settings.toml.
+    fn check_settings_file(&mut self) {
+        if self.last_settings_check.elapsed() < Duration::from_secs(2) {
+            return;
+        }
+        self.last_settings_check = Instant::now();
+        let mtime = settings_mtime();
+        if mtime == self.settings_mtime {
+            return;
+        }
+        self.settings_mtime = mtime;
+        match crate::paths::settings_path().and_then(|p| Settings::load(&p)) {
+            Ok(s) if s != self.settings => {
+                tracing::info!("settings file changed, reloading");
+                self.settings = s;
+                self.apply_settings();
+                self.rebuild_status_menu();
+                if let Some(win) = &self.settings_window {
+                    win.load(&self.settings);
+                }
+            }
+            Ok(_) => {}
+            Err(e) => tracing::warn!("settings file has an error, keeping current settings: {e:#}"),
+        }
+    }
+
+    fn open_settings(&mut self) {
+        self.close_shelf();
+        if self.settings_window.is_none() {
+            let t: &AnyObject = &self.target;
+            self.settings_window = Some(SettingsWindow::new(t, &self.target, self.mtm));
+        }
+        if let Some(win) = &self.settings_window {
+            win.load(&self.settings);
+        }
+        self.apply_settings();
+        self.refresh_settings_window();
+        if let Some(win) = &self.settings_window {
+            win.show();
+        }
+    }
+
+    /// Updates the parts of the Settings window that reflect outside state.
+    fn refresh_settings_window(&self) {
+        let Some(win) = &self.settings_window else { return };
+        win.set_accessibility(crate::paste::is_trusted());
+        let stats = self
+            .store
+            .stats()
+            .map(|s| {
+                format!(
+                    "{} items, {:.1} MB, {} pinboard{}",
+                    s.items,
+                    s.bytes as f64 / 1_048_576.0,
+                    s.pinboards,
+                    if s.pinboards == 1 { "" } else { "s" }
+                )
+            })
+            .unwrap_or_default();
+        let paste = match paste_app::detect().into_iter().next() {
+            None => "No Paste installation found on this Mac.".to_string(),
+            Some(install) => {
+                let last = self.store.last_import().ok().flatten().map(|(when, n)| {
+                    let date = chrono::DateTime::from_timestamp_millis(when)
+                        .map(|d| d.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                        .unwrap_or_default();
+                    format!(" Last import {date}: {n} new items.")
+                });
+                format!("Found {}.{}", install.bundle_id, last.unwrap_or_else(|| " Not imported yet.".into()))
+            }
+        };
+        win.set_info(&stats, &paste);
     }
 
     fn rebuild_status_menu(&self) {
@@ -393,8 +546,7 @@ impl App {
         add("Import from Paste\u{2026}", IMPORT_PASTE);
         add("Clear History\u{2026}", CLEAR_HISTORY);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
-        add("Open Settings File", OPEN_SETTINGS);
-        add("Reload Settings", RELOAD_SETTINGS);
+        add("Settings\u{2026}", SETTINGS);
         if !crate::paste::is_trusted() {
             add("Grant Accessibility Permission\u{2026}", ACCESSIBILITY);
         }
@@ -654,6 +806,11 @@ impl App {
             self.shelf.reload_tabs(&self.store);
             self.shelf.reload(&self.store);
         }
+        self.settings_mtime = settings_mtime();
+        if let Some(win) = &self.settings_window {
+            win.load(&self.settings);
+        }
+        self.refresh_settings_window();
         Some(done)
     }
 }
@@ -662,6 +819,7 @@ fn tick() {
     let finished = with(|app| {
         app.poll_clipboard();
         app.maintenance();
+        app.check_settings_file();
         app.poll_import()
     })
     .flatten();
@@ -792,6 +950,7 @@ pub fn shelf_key_equivalent(event: &NSEvent) -> bool {
         Edit,
         Rename,
         NewBoard(Option<i64>),
+        Settings,
     }
     let after = with(|app| {
         let mods = crate::shortcut::Modifiers {
@@ -846,11 +1005,7 @@ pub fn shelf_key_equivalent(event: &NSEvent) -> bool {
                 app.close_shelf();
                 Some(After::Nothing)
             }
-            "," => {
-                app.close_shelf();
-                open_settings_file();
-                Some(After::Nothing)
-            }
+            "," => Some(After::Settings),
             _ if code == 51 => {
                 if let Some(id) = selected {
                     app.delete(id)
@@ -875,6 +1030,10 @@ pub fn shelf_key_equivalent(event: &NSEvent) -> bool {
         }
         Some(After::NewBoard(item)) => {
             new_pinboard(item);
+            true
+        }
+        Some(After::Settings) => {
+            with(|app| app.open_settings());
             true
         }
     }
@@ -977,7 +1136,68 @@ fn dispatch(raw_tag: isize) {
         }
         CLEAR_HISTORY => clear_history(),
         OPEN_SETTINGS => open_settings_file(),
-        RELOAD_SETTINGS => reload_settings(),
+        SETTINGS => {
+            with(|app| app.open_settings());
+        }
+        settings_window::ADD_APP => add_excluded_app(),
+        settings_window::REMOVE_APP => {
+            with(|app| {
+                let Some(row) = app.settings_window.as_ref().and_then(|w| w.selected_app_row()) else { return };
+                if row < app.settings.privacy.excluded_apps.len() {
+                    app.settings.privacy.excluded_apps.remove(row);
+                    app.save_settings();
+                    if let Some(win) = &app.settings_window {
+                        win.load(&app.settings);
+                    }
+                }
+            });
+        }
+        settings_window::OPEN_ACCESSIBILITY => {
+            crate::paste::request_trust();
+            if let Some(url) = NSURL::URLWithString(&ns(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+            )) {
+                NSWorkspace::sharedWorkspace().openURL(&url);
+            }
+        }
+        settings_window::RESTORE_SHORTCUTS => {
+            with(|app| {
+                app.settings.shortcuts = Default::default();
+                app.save_settings();
+                if let Some(win) = &app.settings_window {
+                    win.load(&app.settings);
+                }
+            });
+        }
+        settings_window::SAVE_PATTERNS => {
+            with(|app| {
+                let Some(result) = app.settings_window.as_ref().map(|w| w.read_patterns()) else { return };
+                match result {
+                    Ok(patterns) => {
+                        let n = patterns.len();
+                        app.settings.privacy.ignore_patterns = patterns;
+                        app.save_settings();
+                        if let Some(win) = &app.settings_window {
+                            win.set_patterns_status(
+                                &format!("Saved {n} pattern{}.", if n == 1 { "" } else { "s" }),
+                                false,
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(win) = &app.settings_window {
+                            win.set_patterns_status(&e, true);
+                        }
+                    }
+                }
+            });
+        }
+        settings_window::OPEN_DATA_FOLDER => {
+            if let Ok(dir) = crate::paths::data_dir() {
+                NSWorkspace::sharedWorkspace().openURL(&NSURL::fileURLWithPath(&ns(&dir.display().to_string())));
+            }
+        }
+
         ACCESSIBILITY => {
             crate::paste::request_trust();
         }
@@ -1135,6 +1355,7 @@ fn clear_history() {
                 tracing::error!("clear history failed: {e:#}");
             }
             let _ = app.store.collect_garbage();
+            app.refresh_settings_window();
         });
     }
 }
@@ -1148,18 +1369,60 @@ fn open_settings_file() {
     }
 }
 
-fn reload_settings() {
-    let result = crate::paths::settings_path().and_then(|p| Settings::load(&p));
-    match result {
-        Ok(settings) => {
-            with(|app| {
-                app.settings = settings;
-                app.apply_settings();
-                app.rebuild_status_menu();
-            });
+fn settings_mtime() -> Option<std::time::SystemTime> {
+    let path = crate::paths::settings_path().ok()?;
+    std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// A control in the Settings window changed.
+pub fn settings_ui_changed() {
+    with(|app| {
+        let Some(win) = &app.settings_window else { return };
+        let mut settings = app.settings.clone();
+        win.read(&mut settings);
+        if settings != app.settings {
+            app.settings = settings;
+            app.save_settings();
         }
-        Err(e) => run_modal(|mtm| dialogs::info("Settings file has an error", &format!("{e:#}"), mtm)),
-    }
+    });
+}
+
+/// Global hotkeys are paused while a shortcut field records, so the current
+/// combination can be typed into it.
+pub fn set_hotkeys_suspended(suspended: bool) {
+    with(|app| {
+        if suspended {
+            app.hotkeys.set(&[]);
+        } else {
+            app.apply_settings();
+        }
+    });
+}
+
+fn add_excluded_app() {
+    let url = run_modal(|mtm| {
+        let panel = NSOpenPanel::openPanel(mtm);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setDirectoryURL(Some(&NSURL::fileURLWithPath(&ns("/Applications"))));
+        panel.setMessage(Some(&ns("Choose an app whose copies Pasted should never save")));
+        (panel.runModal() == NSModalResponseOK).then(|| panel.URL()).flatten()
+    });
+    let Some(url) = url else { return };
+    let Some(bundle_id) = NSBundle::bundleWithURL(&url).and_then(|b| b.bundleIdentifier()).map(|s| s.to_string())
+    else {
+        run_modal(|mtm| dialogs::info("Not an app", "Choose an application bundle (.app).", mtm));
+        return;
+    };
+    with(|app| {
+        if !app.settings.privacy.excluded_apps.contains(&bundle_id) {
+            app.settings.privacy.excluded_apps.push(bundle_id);
+            app.save_settings();
+        }
+        if let Some(win) = &app.settings_window {
+            win.load(&app.settings);
+        }
+    });
 }
 
 fn about() {

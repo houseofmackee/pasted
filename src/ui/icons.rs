@@ -86,12 +86,22 @@ pub fn pick_dominant(pixels: &[[f64; 3]]) -> Option<[f64; 3]> {
         let s = pixels.iter().fold([0.0; 3], |acc, p| [acc[0] + p[0], acc[1] + p[1], acc[2] + p[2]]);
         [s[0] / n, s[1] / n, s[2] / n]
     };
-    let luma = 0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2];
-    if luma > 0.55 {
-        let k = 0.55 / luma;
-        c = c.map(|v| v * k);
+    // Darken until white header text has at least WCAG AA contrast (4.5:1).
+    while contrast_with_white(c) < 4.5 {
+        c = c.map(|v| v * 0.92);
     }
     Some(c)
+}
+
+/// WCAG relative luminance of an sRGB color.
+pub fn relative_luminance([r, g, b]: [f64; 3]) -> f64 {
+    let lin = |v: f64| if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) };
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// WCAG contrast ratio between white and `c`.
+pub fn contrast_with_white(c: [f64; 3]) -> f64 {
+    1.05 / (relative_luminance(c) + 0.05)
 }
 
 impl IconCache {
@@ -134,10 +144,18 @@ mod tests {
     }
 
     #[test]
+    fn headers_meet_wcag_aa_for_white_text() {
+        for px in [[1.0, 0.85, 0.0], [0.0, 1.0, 1.0], [0.9, 0.9, 0.9], [0.2, 0.3, 0.9]] {
+            let c = pick_dominant(&[px; 10]).unwrap();
+            assert!(super::contrast_with_white(c) >= 4.5, "{px:?} -> {c:?}");
+        }
+    }
+
+    #[test]
     fn grayscale_falls_back_to_average_and_light_is_darkened() {
         let [r, g, b] = pick_dominant(&[[1.0, 1.0, 1.0], [0.9, 0.9, 0.9]]).unwrap();
         assert!((r - g).abs() < 1e-9 && (g - b).abs() < 1e-9);
-        assert!(0.299 * r + 0.587 * g + 0.114 * b <= 0.55 + 1e-9);
+        assert!(super::contrast_with_white([r, g, b]) >= 4.5);
         assert!(pick_dominant(&[]).is_none());
     }
 }

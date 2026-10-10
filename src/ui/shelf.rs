@@ -6,10 +6,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSColor, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSFont,
-    NSFontAttributeName, NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem, NSPanel, NSResponder, NSScreen,
-    NSScrollView, NSSearchField, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial,
-    NSVisualEffectState, NSVisualEffectView, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
+    NSBackingStoreType, NSButton, NSColor, NSEvent, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
+    NSImage, NSMenu, NSMenuItem, NSPanel, NSResponder, NSScreen, NSScrollView, NSSearchField, NSTextField, NSView,
+    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
+    NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSAttributedString, NSMutableAttributedString, NSObjectProtocol, NSRange, NSRect,
@@ -130,8 +130,8 @@ impl Shelf {
         let tabs = NSView::initWithFrame(NSView::alloc(mtm), rect(292.0, 0.0, 400.0, 28.0));
         effect.addSubview(&tabs);
 
-        let count = label("", 11.0, false, mtm);
-        count.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        let count = label("", 12.0, true, mtm);
+        count.setTextColor(Some(&NSColor::labelColor()));
         effect.addSubview(&count);
 
         let scroll = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(0.0, 0.0, 800.0, PANEL_H - TOP_BAR_H));
@@ -256,23 +256,26 @@ impl Shelf {
             let b = unsafe {
                 NSButton::buttonWithTitle_target_action(&ns(title), Some(target), Some(sel!(tabClicked:)), self.mtm)
             };
-            b.setBezelStyle(objc2_app_kit::NSBezelStyle::Push);
-            b.setBordered(on);
+            b.setBordered(false);
             b.setTag(tag_value);
-            b.setState(if on { NSControlStateValueOn } else { NSControlStateValueOff });
-            if let Some(c) = color {
-                b.setAttributedTitle(&dot_title(title, c));
+            b.setAttributedTitle(&tab_title(title, on, color));
+            b.setWantsLayer(true);
+            if let Some(layer) = b.layer() {
+                layer.setBackgroundColor(Some(&tab_background(on).CGColor()));
+                layer.setCornerRadius(TAB_H / 2.0);
+                if !on {
+                    layer.setBorderWidth(1.0);
+                    layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
+                }
             }
             if let Some(menu) = menu {
                 // SAFETY: the menu is retained by the button.
                 unsafe { b.setMenu(Some(&menu)) };
             }
             b.sizeToFit();
-            let mut f = b.frame();
-            f.origin.x = x;
-            f.origin.y = 0.0;
-            b.setFrame(f);
-            x += f.size.width + 4.0;
+            let width = b.frame().size.width + 24.0;
+            b.setFrame(rect(x, 0.0, width, TAB_H));
+            x += width + 6.0;
             self.tabs.addSubview(&b);
         };
         add("Clipboard", tag(TAB_SELECT, -1), self.board.is_none(), None, None);
@@ -280,7 +283,7 @@ impl Shelf {
             let menu = board_menu(p, target, self.mtm);
             add(&p.name, tag(TAB_SELECT, p.id), self.board == Some(p.id), Some(p.color), Some(menu));
         }
-        add("+", tag(TAB_NEW, 0), false, None, None);
+        add("+ New", tag(TAB_NEW, 0), false, None, None);
     }
 
     pub fn select_board(&mut self, board: Option<i64>, store: &Store) {
@@ -434,20 +437,33 @@ impl Shelf {
     }
 }
 
-/// "● Name" with only the dot in the pinboard's color.
-fn dot_title(name: &str, color: u32) -> Retained<NSAttributedString> {
-    let text =
-        NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &ns(&format!("\u{25cf} {name}")));
-    let font = NSFont::systemFontOfSize(13.0);
+const TAB_H: f64 = 28.0;
+
+/// Tabs use opaque backgrounds so their contrast does not depend on what is
+/// behind the translucent panel: the selected tab is near-black with light
+/// text (inverted in dark mode), others are a light pill with dark text.
+fn tab_background(selected: bool) -> Retained<NSColor> {
+    if selected { NSColor::labelColor() } else { NSColor::controlBackgroundColor() }
+}
+
+/// Tab label, with a dot in the pinboard's color when there is one.
+fn tab_title(name: &str, selected: bool, color: Option<u32>) -> Retained<NSAttributedString> {
+    let text = match color {
+        Some(_) => format!("\u{25cf} {name}"),
+        None => name.to_string(),
+    };
+    let text = NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &ns(&text));
+    // SAFETY: reading an AppKit constant.
+    let font = NSFont::systemFontOfSize_weight(13.0, unsafe { objc2_app_kit::NSFontWeightSemibold });
+    let fg = if selected { NSColor::windowBackgroundColor() } else { NSColor::labelColor() };
+    let all = NSRange::new(0, text.length());
     // SAFETY: standard attribute keys with values of the documented types.
     unsafe {
-        text.addAttribute_value_range(NSFontAttributeName, &font, NSRange::new(0, text.length()));
-        text.addAttribute_value_range(
-            NSForegroundColorAttributeName,
-            &NSColor::labelColor(),
-            NSRange::new(0, text.length()),
-        );
-        text.addAttribute_value_range(NSForegroundColorAttributeName, &argb(color), NSRange::new(0, 1));
+        text.addAttribute_value_range(NSFontAttributeName, &font, all);
+        text.addAttribute_value_range(NSForegroundColorAttributeName, &fg, all);
+        if let Some(c) = color {
+            text.addAttribute_value_range(NSForegroundColorAttributeName, &argb(c), NSRange::new(0, 1));
+        }
     }
     Retained::into_super(text)
 }

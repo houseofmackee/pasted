@@ -24,6 +24,12 @@ pub enum Command {
     Run,
     /// Show the shelf of the running app.
     Open,
+    /// Show the Settings window of the running app.
+    Settings {
+        /// Tab to show: general, shortcuts, privacy or data.
+        #[arg(long)]
+        tab: Option<String>,
+    },
     /// List recent history, or a pinboard's items.
     List {
         #[arg(short = 'n', long, default_value_t = 20)]
@@ -134,12 +140,17 @@ pub fn run(command: Command) -> Result<()> {
     let mut store = Store::open_default()?;
     match command {
         Command::Run => unreachable!("handled in main"),
-        Command::Open => {
-            let name = objc2_foundation::NSString::from_str(crate::app::OPEN_NOTIFICATION);
-            // SAFETY: plain notification without object or user info.
+        Command::Open | Command::Settings { .. } => {
+            let (name, object) = match &command {
+                Command::Settings { tab } => (crate::app::SETTINGS_NOTIFICATION, tab.clone()),
+                _ => (crate::app::OPEN_NOTIFICATION, None),
+            };
+            let name = objc2_foundation::NSString::from_str(name);
+            let object = object.map(|o| objc2_foundation::NSString::from_str(&o));
+            // SAFETY: a notification whose object is a string, as distributed notifications require.
             unsafe {
                 objc2_foundation::NSDistributedNotificationCenter::defaultCenter()
-                    .postNotificationName_object_userInfo_deliverImmediately(&name, None, None, true)
+                    .postNotificationName_object_userInfo_deliverImmediately(&name, object.as_deref(), None, true)
             };
         }
         Command::List { limit, board, json } => {

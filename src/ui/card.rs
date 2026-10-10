@@ -176,7 +176,7 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
     title.setFrame(rect(PAD, 24.0, w - PAD * 2.0 - 44.0, 20.0));
     header.addSubview(&title);
     let time = label(&relative_time(item.timestamp), 11.0, false, mtm);
-    time.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.8)));
+    time.setTextColor(Some(&NSColor::colorWithWhite_alpha(1.0, 0.92)));
     time.setFrame(rect(PAD, 7.0, w - PAD * 2.0 - 44.0, 16.0));
     header.addSubview(&time);
     if let Some(icon) = icon {

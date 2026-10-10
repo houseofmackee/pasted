@@ -674,6 +674,18 @@ impl Store {
         Ok(self.conn.last_insert_rowid())
     }
 
+    /// When the last completed import finished and how many items it added.
+    pub fn last_import(&self) -> Result<Option<(i64, i64)>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT finished_at, imported FROM import_runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
     pub fn finish_import(&self, run: i64, imported: usize, skipped: usize, failed: usize) -> Result<()> {
         self.conn.execute(
             "UPDATE import_runs SET finished_at = ?2, imported = ?3, skipped = ?4, failed = ?5 WHERE id = ?1",

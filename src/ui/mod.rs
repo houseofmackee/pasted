@@ -2,12 +2,21 @@ pub mod card;
 pub mod dialogs;
 pub mod icons;
 pub mod preview;
+pub mod settings_window;
 pub mod shelf;
 pub mod stack_panel;
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSFont, NSLineBreakMode, NSTextField};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
+
+/// Brings our (menu bar only) app to the front. `NSApplication::activate` is
+/// cooperative on macOS 14+ and does nothing when another app is active, so
+/// the older call is still needed for windows opened from the menu bar.
+pub fn activate_app(mtm: MainThreadMarker) {
+    #[allow(deprecated)]
+    objc2_app_kit::NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
+}
 
 pub fn rect(x: f64, y: f64, w: f64, h: f64) -> NSRect {
     NSRect::new(NSPoint::new(x, y), NSSize::new(w, h))
@@ -34,7 +43,9 @@ pub fn wrapping_label(text: &str, font: &NSFont, lines: isize, mtm: MainThreadMa
     let l = NSTextField::wrappingLabelWithString(&ns(text), mtm);
     l.setFont(Some(font));
     l.setMaximumNumberOfLines(lines);
-    l.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    // Tail truncation would make the field single-line; wrap by word and let
+    // the cell truncate the last visible line instead.
+    l.setLineBreakMode(NSLineBreakMode::ByWordWrapping);
     if let Some(cell) = l.cell() {
         cell.setTruncatesLastVisibleLine(true);
     }
