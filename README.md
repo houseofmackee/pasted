@@ -23,13 +23,20 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Import history, pinboards, OCR text and shortcuts from Paste
 - A command line interface for scripts
 
+## Install
+
+Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), check it against the `.sha256` file next to it (`shasum -a 256 -c Pasted-<version>-arm64.dmg.sha256`), open it and drag Pasted into Applications.
+
+Pasted is not notarized yet, so macOS blocks the first launch. Open it once, click Done, then click **Open Anyway** in System Settings > Privacy & Security. If that button does not appear, run `xattr -dr com.apple.quarantine /Applications/Pasted.app`. The DMG includes these steps in "Read Me First.txt".
+
 ## Build and run
 
-Requires macOS 14 or later and a Rust toolchain.
+Requires an Apple silicon Mac with macOS 14 or later and a Rust toolchain.
 
 ```sh
 cargo run --release            # run from the terminal
 scripts/bundle.sh              # build and ad-hoc sign dist/Pasted.app
+scripts/make_dmg.sh            # build dist/Pasted-<version>-arm64.dmg and its .sha256, then mount and check it
 scripts/make_icon.sh           # rebuild macos/AppIcon.icns after editing macos/AppIcon.svg (needs librsvg)
 open dist/Pasted.app
 ```
