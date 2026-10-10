@@ -112,6 +112,11 @@ pub enum Command {
     Prune,
     /// Fetch and print a link preview (debugging aid; nothing is stored).
     Preview { url: String },
+    /// Encryption at rest: status, enable or disable (quit the app first).
+    Encryption {
+        #[command(subcommand)]
+        command: Option<EncryptionCommand>,
+    },
     /// Show statistics.
     Stats {
         /// Open the Statistics window of the running app instead.
@@ -123,6 +128,13 @@ pub enum Command {
     },
     /// Print data file locations.
     Paths,
+}
+
+#[derive(Subcommand)]
+pub enum EncryptionCommand {
+    Status,
+    Enable,
+    Disable,
 }
 
 #[derive(Subcommand)]
@@ -299,6 +311,37 @@ pub fn run(command: Command) -> Result<()> {
                 }
             }
             print!("{}", crate::snippet::expand(&input, &ctx).text);
+        }
+        Command::Encryption { command } => {
+            let (db, blobs) = (crate::paths::db_path()?, crate::paths::blobs_dir()?);
+            match command.unwrap_or(EncryptionCommand::Status) {
+                EncryptionCommand::Status => {
+                    let on = crate::encryption::database_is_encrypted(&db);
+                    println!("Encryption: {}", if on { "on" } else { "off" });
+                    if on {
+                        let key = crate::encryption::keychain_load()?.is_some();
+                        println!("Key in Keychain: {}", if key { "yes" } else { "MISSING" });
+                    }
+                }
+                cmd => {
+                    // The app keeps the database open; switching needs it closed.
+                    drop(store);
+                    let lock = std::fs::File::create(crate::paths::data_dir()?.join("pasted.lock"))?;
+                    if lock.try_lock().is_err() {
+                        bail!("Pasted is running. Quit it first, or use Settings > Privacy > Encryption.");
+                    }
+                    let s = match cmd {
+                        EncryptionCommand::Enable => crate::encryption::enable(&db, &blobs)?,
+                        _ => crate::encryption::disable(&db, &blobs)?,
+                    };
+                    println!(
+                        "Encryption is now {} ({} stored files converted).",
+                        if crate::encryption::database_is_encrypted(&db) { "on" } else { "off" },
+                        s.blobs
+                    );
+                    return Ok(());
+                }
+            }
         }
         Command::Rules { command } => {
             let settings = Settings::load(&crate::paths::settings_path()?)?;

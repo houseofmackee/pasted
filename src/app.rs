@@ -254,6 +254,9 @@ pub struct App {
     asked_accessibility: bool,
     last_maintenance: Instant,
     import_job: Option<ImportResult>,
+    /// Set while encryption is being switched on or off; the real store is
+    /// closed and capture pauses.
+    switching: Option<ImportResult>,
     /// A running export or restore: dialog title and result slot.
     file_job: Option<(&'static str, ImportResult)>,
     stack: Option<PasteStack>,
@@ -387,6 +390,7 @@ pub fn run() -> Result<()> {
         last_maintenance: Instant::now() - MAINTENANCE_INTERVAL,
         import_job: None,
         file_job: None,
+        switching: None,
         stack: None,
         pending_snippet: None,
         settings_window: None,
@@ -643,6 +647,7 @@ impl App {
     /// Updates the parts of the Settings window that reflect outside state.
     fn refresh_settings_window(&self) {
         let Some(win) = &self.settings_window else { return };
+        win.set_encryption(if self.switching.is_some() { None } else { Some(self.store.is_encrypted()) });
         win.set_accessibility(crate::paste::is_trusted());
         let stats = self
             .store
@@ -706,6 +711,10 @@ impl App {
     }
 
     fn poll_clipboard(&mut self) {
+        if self.switching.is_some() {
+            // Leave `last_change` alone so the latest copy is captured afterwards.
+            return;
+        }
         let cc = self.pasteboard.changeCount();
         if cc == self.last_change {
             return;
@@ -826,6 +835,10 @@ impl App {
     }
 
     fn open_shelf(&mut self) {
+        if self.switching.is_some() {
+            objc2_app_kit::NSBeep();
+            return;
+        }
         if self.shelf.is_visible() {
             self.close_shelf();
             return;
@@ -1098,6 +1111,18 @@ impl App {
         }
     }
 
+    /// Finished encryption switch: reopens the real store.
+    fn poll_switch(&mut self) -> Option<Result<String, String>> {
+        let done = self.switching.as_ref()?.lock().ok()?.take()?;
+        self.switching = None;
+        match Store::open_default() {
+            Ok(store) => self.store = store,
+            Err(e) => return Some(Err(format!("{e:#}"))),
+        }
+        self.refresh_settings_window();
+        Some(done)
+    }
+
     /// Finished export or restore: (title, result).
     fn poll_file_job(&mut self) -> Option<(&'static str, Result<String, String>)> {
         let (title, slot) = self.file_job.as_ref()?;
@@ -1139,9 +1164,16 @@ fn tick() {
         app.maintenance();
         app.check_settings_file();
         app.expire_items();
-        (app.poll_import(), app.poll_file_job())
+        (app.poll_import(), app.poll_file_job(), app.poll_switch())
     });
-    let Some((import, file_job)) = finished else { return };
+    let Some((import, file_job, switch)) = finished else { return };
+    if let Some(result) = switch {
+        let mtm = mtm();
+        match result {
+            Ok(summary) => dialogs::info("Encryption", &summary, mtm),
+            Err(e) => dialogs::info("Encryption could not be changed", &e, mtm),
+        }
+    }
     if let Some(result) = import {
         let mtm = mtm();
         match result {
@@ -1160,8 +1192,72 @@ fn tick() {
 
 /// Runs `work` on a background thread with its own database connection and
 /// reports the outcome in a dialog when it finishes.
+/// Turns encryption at rest on or off after confirming.
+fn toggle_encryption() {
+    let Some(state) = with(|app| {
+        let busy = app.switching.is_some() || app.file_job.is_some() || app.import_job.is_some();
+        (busy, app.store.is_encrypted())
+    }) else {
+        return;
+    };
+    if state.0 {
+        run_modal(|mtm| dialogs::info("Please wait", "An import, export or encryption change is still running.", mtm));
+        return;
+    }
+    let enable = !state.1;
+    let (title, message, action) = if enable {
+        (
+            "Encrypt your clipboard history?",
+            "Pasted creates a key in your login Keychain and uses it to encrypt the history database and stored \
+             images and files, so other apps, other users and backups cannot read them.\n\n\
+             Keep in mind:\n\
+             \u{2022} If the Keychain item \u{201c}io.pasted.app\u{201d} is deleted, the history cannot be recovered.\n\
+             \u{2022} Exports and backups you make are not encrypted.\n\
+             \u{2022} FileVault already protects the disk while the Mac is off; this adds protection while you are logged in.\n\
+             \u{2022} Earlier unencrypted copies may remain in free disk space until it is reused.\n\n\
+             Copying pauses for a moment while this runs.",
+            "Encrypt",
+        )
+    } else {
+        (
+            "Turn off encryption?",
+            "Your history is decrypted and stored as plain files again, and the key is removed from the Keychain.",
+            "Decrypt",
+        )
+    };
+    if !run_modal(|mtm| dialogs::confirm(title, message, action, mtm)) {
+        return;
+    }
+    let slot: ImportResult = Arc::new(Mutex::new(None));
+    with(|app| {
+        app.close_shelf();
+        // Close the real store; workers stop at the gate below.
+        app.store = Store::placeholder().expect("in-memory store");
+        app.switching = Some(slot.clone());
+        app.refresh_settings_window();
+    });
+    std::thread::spawn(move || {
+        let result = (|| -> Result<String> {
+            let _gate = crate::encryption::DB_GATE.write();
+            let (db, blobs) = (crate::paths::db_path()?, crate::paths::blobs_dir()?);
+            let s =
+                if enable { crate::encryption::enable(&db, &blobs)? } else { crate::encryption::disable(&db, &blobs)? };
+            Ok(format!(
+                "Your history is now {}. {} stored files were {}.",
+                if enable { "encrypted" } else { "stored without encryption" },
+                s.blobs,
+                if enable { "encrypted" } else { "decrypted" }
+            ))
+        })()
+        .map_err(|e| format!("{e:#}\n\nNothing was changed; your history is as it was."));
+        if let Ok(mut guard) = slot.lock() {
+            *guard = Some(result);
+        }
+    });
+}
+
 fn start_file_job(title: &'static str, work: impl FnOnce(&mut Store) -> Result<String> + Send + 'static) {
-    if with(|app| app.file_job.is_some() || app.import_job.is_some()).unwrap_or(false) {
+    if with(|app| app.file_job.is_some() || app.import_job.is_some() || app.switching.is_some()).unwrap_or(false) {
         run_modal(|mtm| dialogs::info("Please wait", "Another import or export is still running.", mtm));
         return;
     }
@@ -1573,6 +1669,7 @@ fn dispatch(raw_tag: isize) {
         settings_window::ADD_APP => add_excluded_app(),
         settings_window::ADD_RULE => edit_rule(None),
         settings_window::EXPORT => export_history(),
+        settings_window::TOGGLE_ENCRYPTION => toggle_encryption(),
         settings_window::RESTORE => restore_backup(),
         settings_window::EDIT_RULE => {
             if let Some(row) = with(|app| app.settings_window.as_ref().and_then(|w| w.selected_rule_row())).flatten() {

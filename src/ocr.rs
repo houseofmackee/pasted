@@ -65,15 +65,13 @@ pub fn spawn_worker() {
     std::thread::Builder::new()
         .name("pasted-ocr".into())
         .spawn(|| {
-            let store = match Store::open_default() {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("OCR worker could not open the database: {e:#}");
-                    return;
-                }
-            };
             loop {
-                match process_batch(&store) {
+                // Open the database per batch so encryption can be switched in between.
+                let result = {
+                    let _gate = crate::encryption::DB_GATE.read();
+                    Store::open_default().and_then(|store| process_batch(&store))
+                };
+                match result {
                     Ok(0) => std::thread::sleep(IDLE),
                     Ok(n) => tracing::debug!("OCR processed {n} images"),
                     Err(e) => {

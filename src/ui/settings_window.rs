@@ -44,6 +44,7 @@ pub const EDIT_RULE: u8 = 67;
 pub const REMOVE_RULE: u8 = 68;
 pub const EXPORT: u8 = 69;
 pub const RESTORE: u8 = 70;
+pub const TOGGLE_ENCRYPTION: u8 = 71;
 
 pub struct RecorderIvars {
     shortcut: Cell<Option<Shortcut>>,
@@ -274,6 +275,8 @@ pub struct SettingsWindow {
     rules_table: Retained<NSTableView>,
     rules_source: Retained<AppsDataSource>,
     rules_status: Retained<NSTextField>,
+    encryption: Retained<NSTextField>,
+    encryption_toggle: Retained<NSButton>,
     patterns: Retained<NSTextView>,
     patterns_status: Retained<NSTextField>,
     stats: Retained<NSTextField>,
@@ -504,7 +507,7 @@ impl SettingsWindow {
         f.y += 10.0;
         let mut boxes = Vec::new();
         for (i, title) in [
-            "Ignore content marked confidential by password managers",
+            "Ignore what password managers mark as private",
             "Skip passwords, API keys, tokens and card numbers",
             "Show Pasted while sharing or recording the screen",
         ]
@@ -571,6 +574,18 @@ impl SettingsWindow {
         patterns_status.setTextColor(Some(&NSColor::secondaryLabelColor()));
         patterns_status.setFrame(rect(CONTROL_X - 10.0 + save.frame().size.width, y + 7.0, 260.0, 16.0));
         f.add(&patterns_status);
+        let encryption = label("", 13.0, false, mtm);
+        let y = f.row("Encryption:", 30.0);
+        encryption.setFrame(rect(CONTROL_X - 20.0, y + 6.0, 200.0, 18.0));
+        f.add(&encryption);
+        let toggle = button("Turn On\u{2026}", tag(TOGGLE_ENCRYPTION, 0), target, mtm);
+        toggle.setFrame(rect(CONTROL_X + 180.0, y, 130.0, 30.0));
+        f.add(&toggle);
+        f.note(
+            "Encrypts history, images and files with a key kept in your Keychain, so other apps and backups \
+             cannot read them. Exports are not encrypted.",
+            CONTROL_X - 20.0,
+        );
         add_tab("Privacy", &f.view);
 
         // Rules
@@ -712,6 +727,8 @@ impl SettingsWindow {
             rules_table,
             rules_source,
             rules_status,
+            encryption,
+            encryption_toggle: toggle,
             patterns,
             patterns_status,
             stats,
@@ -891,6 +908,18 @@ impl SettingsWindow {
         };
         self.accessibility.setStringValue(&ns(text));
         self.accessibility.setTextColor(Some(&color));
+    }
+
+    /// `None` while a switch is in progress.
+    pub fn set_encryption(&self, on: Option<bool>) {
+        let (text, button, enabled) = match on {
+            Some(true) => ("\u{1F512} On", "Turn Off\u{2026}", true),
+            Some(false) => ("Off", "Turn On\u{2026}", true),
+            None => ("Switching\u{2026}", "Please wait", false),
+        };
+        self.encryption.setStringValue(&ns(text));
+        self.encryption_toggle.setTitle(&ns(button));
+        self.encryption_toggle.setEnabled(enabled);
     }
 
     pub fn set_info(&self, stats: &str, paste: &str) {

@@ -4,6 +4,7 @@ compile_error!("pasted only supports macOS");
 mod app;
 mod cli;
 mod clipboard;
+mod encryption;
 mod export;
 mod hotkeys;
 mod import;

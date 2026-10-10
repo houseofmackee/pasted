@@ -181,6 +181,8 @@ pub struct ExportRow {
 pub struct Store {
     conn: Connection,
     blobs: PathBuf,
+    /// Set when history is encrypted at rest.
+    keys: Option<crate::encryption::Keys>,
 }
 
 pub fn checksum(reps: &[Representation]) -> String {
@@ -238,18 +240,59 @@ fn item_from_row(row: &Row) -> rusqlite::Result<Item> {
 }
 
 impl Store {
+    /// Opens the user's history, fetching the key from the Keychain when the
+    /// database is encrypted.
     pub fn open_default() -> Result<Store> {
-        Store::open(&crate::paths::db_path()?, crate::paths::blobs_dir()?)
+        let db = crate::paths::db_path()?;
+        let keys =
+            if crate::encryption::database_is_encrypted(&db) {
+                Some(crate::encryption::keychain_load()?.context(
+                    "history is encrypted, but its key is missing from the Keychain (it may have been deleted)",
+                )?)
+            } else {
+                None
+            };
+        Store::open_with(&db, crate::paths::blobs_dir()?, keys)
     }
 
+    #[cfg(test)]
     pub fn open(db: &Path, blobs: PathBuf) -> Result<Store> {
+        Store::open_with(db, blobs, None)
+    }
+
+    pub fn open_with(db: &Path, blobs: PathBuf, keys: Option<crate::encryption::Keys>) -> Result<Store> {
         let conn = Connection::open(db).with_context(|| format!("opening {}", db.display()))?;
+        if let Some(k) = &keys {
+            k.apply(&conn)?;
+        }
+        // The first real query fails here if the key is wrong or missing.
+        conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
+            .with_context(|| format!("{} could not be read (encrypted with a different key?)", db.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
         std::fs::create_dir_all(&blobs)?;
-        let mut store = Store { conn, blobs };
+        let mut store = Store { conn, blobs, keys };
         store.migrate()?;
         Ok(store)
+    }
+
+    /// An empty in-memory store, used while the real one is closed.
+    pub fn placeholder() -> Result<Store> {
+        let dir = std::env::temp_dir().join("pasted-placeholder-blobs");
+        Store::open_with(Path::new(":memory:"), dir, None)
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.keys.is_some()
+    }
+
+    fn read_blob(&self, name: &str) -> Result<Vec<u8>> {
+        let raw = std::fs::read(self.blob_path(name)).with_context(|| format!("reading blob {name}"))?;
+        if crate::encryption::is_sealed(&raw) {
+            self.keys.as_ref().context("an encrypted file was found but no key is loaded")?.open(&raw)
+        } else {
+            Ok(raw)
+        }
     }
 
     fn migrate(&mut self) -> Result<()> {
@@ -271,15 +314,22 @@ impl Store {
     }
 
     fn write_blob(&self, data: &[u8]) -> Result<String> {
-        let hash = hex(&Sha256::digest(data));
-        let path = self.blob_path(&hash);
+        let name = match &self.keys {
+            Some(k) => k.blob_name(data),
+            None => hex(&Sha256::digest(data)),
+        };
+        let path = self.blob_path(&name);
         if !path.exists() {
+            let content = match &self.keys {
+                Some(k) => k.seal(data)?,
+                None => data.to_vec(),
+            };
             std::fs::create_dir_all(path.parent().unwrap())?;
             let tmp = path.with_extension("tmp");
-            std::fs::write(&tmp, data)?;
+            std::fs::write(&tmp, content)?;
             std::fs::rename(&tmp, &path)?;
         }
-        Ok(hash)
+        Ok(name)
     }
 
     fn upsert_app(&self, app: &SourceApp) -> Result<i64> {
@@ -395,8 +445,7 @@ impl Store {
             let (index, uti, data, blob) = row?;
             let data = match (data, blob) {
                 (Some(d), _) => d,
-                (None, Some(hash)) => std::fs::read(self.blob_path(&hash))
-                    .with_context(|| format!("reading blob {hash} for item {id}"))?,
+                (None, Some(hash)) => self.read_blob(&hash).with_context(|| format!("item {id}"))?,
                 (None, None) => Vec::new(),
             };
             out.push(Representation { index, uti, data });
@@ -416,7 +465,7 @@ impl Store {
             .optional()?;
         Ok(match row {
             Some((Some(d), _)) => Some(d),
-            Some((None, Some(hash))) => Some(std::fs::read(self.blob_path(&hash))?),
+            Some((None, Some(hash))) => Some(self.read_blob(&hash)?),
             _ => None,
         })
     }

@@ -2,7 +2,7 @@
 
 A fast, private clipboard manager for macOS, written in Rust. Inspired by [Paste](https://pasteapp.io), with history import from an existing Paste installation.
 
-Everything stays on your Mac: no accounts and no telemetry. The only network access is fetching link previews, which you can turn off.
+Everything stays on your Mac: no accounts and no telemetry, with optional encryption at rest. The only network access is fetching link previews, which you can turn off.
 
 ## Features
 
@@ -109,6 +109,7 @@ pasted settings --tab privacy     # show a Settings tab
 pasted preview <url>              # fetch a link preview (debugging)
 pasted export backup.zip         # also .json or .csv; --board and --query filter
 pasted import archive backup.zip # restore a backup
+pasted encryption [status|enable|disable]
 pasted stats [--days 30]          # summary in the terminal; --show opens the Statistics window
 pasted paths
 ```
@@ -124,6 +125,16 @@ Link previews Paste already stored (titles, images, icons) come along, so those 
 Imports copy history as it is by default. To leave sensitive items behind, choose what to skip in Settings > Data (or the `[import]` section of the settings file): items from ignored apps, API keys and tokens, text matching your ignore patterns, and short snippets that mention a password. Each check is optional and off by default; already imported items are never removed.
 
 The importer copies Paste's database to a temporary directory and reads the copy, so Paste's own files are never modified. Running it again only adds items that are new since the last import. History retention and shortcuts are taken from Paste's settings. Quit Paste first for the most complete import.
+
+## Encryption at rest
+
+Turn it on in Settings > Privacy > Encryption, or with `pasted encryption enable` while the app is not running (`status` and `disable` work the same way). Pasted then:
+
+- creates a random key in your login Keychain (item `io.pasted.app`),
+- encrypts the history database with SQLCipher (AES-256, using macOS CommonCrypto),
+- encrypts each stored image and file with AES-256-GCM under a name that does not reveal its content.
+
+This keeps other apps, other user accounts and backups (Time Machine, synced folders) from reading your history. Know the limits: if the Keychain item is deleted the history cannot be recovered; exports and backups you make are not encrypted; FileVault already protects the disk while the Mac is off; and unencrypted copies from before you turned it on may remain in free disk space until it is reused.
 
 ## Export and backup
 

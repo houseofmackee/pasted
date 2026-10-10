@@ -282,43 +282,51 @@ pub fn spawn_worker(enabled: &'static AtomicBool) {
     std::thread::Builder::new()
         .name("pasted-links".into())
         .spawn(move || {
-            let store = match Store::open_default() {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::error!("link preview worker could not open the database: {e:#}");
-                    return;
-                }
-            };
             loop {
                 if !enabled.load(Ordering::Relaxed) {
                     std::thread::sleep(IDLE);
                     continue;
                 }
-                let urls = store.links_needing_preview(BATCH).unwrap_or_default();
-                if urls.is_empty() {
-                    std::thread::sleep(IDLE);
-                    continue;
-                }
+                // The database is opened only to read the queue and to save
+                // results, never while waiting on the network.
+                let urls = {
+                    let _gate = crate::encryption::DB_GATE.read();
+                    Store::open_default().and_then(|s| s.links_needing_preview(BATCH))
+                };
+                let urls = match urls {
+                    Ok(u) if !u.is_empty() => u,
+                    Ok(_) => {
+                        std::thread::sleep(IDLE);
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("link preview queue: {e:#}");
+                        std::thread::sleep(IDLE);
+                        continue;
+                    }
+                };
+                let mut results = Vec::new();
                 for url in urls {
                     if !enabled.load(Ordering::Relaxed) {
                         break;
                     }
-                    let parsed = Url::parse(&url).ok();
-                    let result = match parsed {
+                    let result = match Url::parse(&url).ok() {
                         Some(u) if is_fetchable(&u) => fetch(&url),
                         _ => Err(anyhow::anyhow!("skipped")),
                     };
-                    let saved = match result {
-                        Ok(preview) => store.set_link_preview(&preview, "ok"),
+                    results.push(match result {
+                        Ok(preview) => (preview, "ok"),
                         Err(e) => {
                             tracing::debug!("no preview for {url}: {e:#}");
-                            store
-                                .set_link_preview(&LinkPreview { url: url.clone(), ..LinkPreview::default() }, "failed")
+                            (LinkPreview { url, ..LinkPreview::default() }, "failed")
                         }
-                    };
-                    if let Err(e) = saved {
-                        tracing::warn!("saving link preview failed: {e:#}");
-                    }
+                    });
+                }
+                let _gate = crate::encryption::DB_GATE.read();
+                let saved = Store::open_default()
+                    .and_then(|store| results.iter().try_for_each(|(p, status)| store.set_link_preview(p, status)));
+                if let Err(e) = saved {
+                    tracing::warn!("saving link previews failed: {e:#}");
                 }
             }
         })
