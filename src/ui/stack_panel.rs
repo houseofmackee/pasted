@@ -2,10 +2,7 @@
 
 use objc2::rc::Retained;
 use objc2::{MainThreadOnly, msg_send};
-use objc2_app_kit::{
-    NSBackingStoreType, NSColor, NSPanel, NSScreen, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindowCollectionBehavior, NSWindowStyleMask,
-};
+use objc2_app_kit::{NSBackingStoreType, NSColor, NSPanel, NSScreen, NSWindowCollectionBehavior, NSWindowStyleMask};
 use objc2_foundation::MainThreadMarker;
 
 use super::{label, rect};
@@ -45,7 +42,7 @@ impl StackPanel {
     }
 
     /// Redraws the queue; `items` are in paste order.
-    pub fn show(&self, items: &[Item]) {
+    pub fn show(&self, items: &[Item], order: crate::stack::StackOrder) {
         let mtm = self.mtm;
         let rows = items.len().clamp(1, SHOWN) + usize::from(items.len() > SHOWN);
         let h = 44.0 + rows as f64 * ROW + 10.0;
@@ -55,16 +52,23 @@ impl StackPanel {
             rect(vf.origin.x + vf.size.width - W - 12.0, vf.origin.y + vf.size.height - h - 12.0, W, h),
             true,
         );
-        let effect = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), rect(0.0, 0.0, W, h));
-        effect.setMaterial(NSVisualEffectMaterial::HUDWindow);
-        effect.setState(NSVisualEffectState::Active);
+        // Opaque so text contrast does not depend on what is behind the panel.
+        let effect = objc2_app_kit::NSView::initWithFrame(objc2_app_kit::NSView::alloc(mtm), rect(0.0, 0.0, W, h));
         effect.setWantsLayer(true);
         if let Some(layer) = effect.layer() {
+            layer.setBackgroundColor(Some(&NSColor::textBackgroundColor().CGColor()));
             layer.setCornerRadius(12.0);
             layer.setMasksToBounds(true);
+            layer.setBorderWidth(1.0);
+            layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
         }
         let title = label(
-            &format!("Paste Stack \u{00b7} {} item{}", items.len(), if items.len() == 1 { "" } else { "s" }),
+            &format!(
+                "Paste Stack \u{00b7} {} item{} \u{00b7} {}",
+                items.len(),
+                if items.len() == 1 { "" } else { "s" },
+                order.label()
+            ),
             13.0,
             true,
             mtm,
@@ -80,9 +84,6 @@ impl StackPanel {
         }
         for (i, item) in items.iter().take(SHOWN).enumerate() {
             let row = label(&format!("{}. {}", i + 1, item.summary(60)), 12.0, i == 0, mtm);
-            if i > 0 {
-                row.setTextColor(Some(&NSColor::secondaryLabelColor()));
-            }
             row.setFrame(rect(14.0, y, W - 28.0, 18.0));
             effect.addSubview(&row);
             y -= ROW;

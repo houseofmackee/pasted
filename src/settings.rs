@@ -55,6 +55,8 @@ pub struct General {
     pub link_previews: bool,
     /// After exact matches, also show close matches (typos, abbreviations).
     pub fuzzy_search: bool,
+    /// Which queued copy Paste Stack pastes first.
+    pub paste_stack_order: crate::stack::StackOrder,
 }
 
 impl Default for General {
@@ -68,6 +70,7 @@ impl Default for General {
             launch_at_login: false,
             link_previews: true,
             fuzzy_search: true,
+            paste_stack_order: crate::stack::StackOrder::OldestFirst,
         }
     }
 }

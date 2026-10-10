@@ -273,6 +273,7 @@ pub struct SettingsWindow {
     trim_whitespace: Retained<NSButton>,
     clean_links: Retained<NSButton>,
     expand_placeholders: Retained<NSButton>,
+    stack_order: Retained<NSPopUpButton>,
     accessibility: Retained<NSTextField>,
     login_note: Retained<NSTextField>,
     open_shelf: Retained<ShortcutRecorder>,
@@ -466,6 +467,10 @@ impl SettingsWindow {
             f.add(&b);
             boxes.push(b);
         }
+        let stack_order = popup(&["Oldest copy first".to_string(), "Newest copy first".to_string()], target, mtm);
+        let y = f.row("Paste Stack pastes:", 26.0);
+        stack_order.setFrame(rect(CONTROL_X, y, 200.0, 26.0));
+        f.add(&stack_order);
         f.note(
             "Placeholders: {date} {time} {datetime} {weekday} {month} {year}, offsets like {date+7d}, formats like \
              {date:%d/%m/%Y}, {clipboard}, {uuid}, {cursor}, {input:Name}. Write \\{date} to keep it literal.",
@@ -799,6 +804,7 @@ impl SettingsWindow {
             trim_whitespace,
             clean_links,
             expand_placeholders,
+            stack_order,
             accessibility,
             login_note,
             open_shelf,
@@ -865,6 +871,10 @@ impl SettingsWindow {
         set_checked(&self.trim_whitespace, s.pasting.trim_whitespace);
         set_checked(&self.clean_links, s.pasting.clean_links);
         set_checked(&self.expand_placeholders, s.pasting.expand_placeholders);
+        self.stack_order.selectItemAtIndex(match g.paste_stack_order {
+            crate::stack::StackOrder::OldestFirst => 0,
+            crate::stack::StackOrder::NewestFirst => 1,
+        });
         self.open_shelf.set_shortcut(s.shortcuts.open_shelf);
         self.paste_stack.set_shortcut(s.shortcuts.paste_stack);
         self.next_board.set_shortcut(s.shortcuts.next_pinboard);
@@ -940,6 +950,11 @@ impl SettingsWindow {
         s.pasting.trim_whitespace = checked(&self.trim_whitespace);
         s.pasting.clean_links = checked(&self.clean_links);
         s.pasting.expand_placeholders = checked(&self.expand_placeholders);
+        s.general.paste_stack_order = if self.stack_order.indexOfSelectedItem() == 1 {
+            crate::stack::StackOrder::NewestFirst
+        } else {
+            crate::stack::StackOrder::OldestFirst
+        };
         let sc = &mut s.shortcuts;
         for (rec, target) in [
             (&self.open_shelf, &mut sc.open_shelf),

@@ -18,7 +18,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Statistics window: items added per day and by time of day, types, top apps, most pasted items and devices, over 7, 30 or 90 days, for all devices or one, in light and dark mode
 - Export to a restorable ZIP backup, JSON or CSV
 - Optional read-only access for AI tools such as Claude and Cursor through a local MCP server (off by default)
-- Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
+- Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order, oldest or newest first
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers (or, if you choose, keeps them hidden for a few minutes), supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
 - A command line interface for scripts
@@ -198,6 +198,7 @@ sounds = false
 launch_at_login = false
 link_previews = true
 fuzzy_search = true             # close matches after exact ones
+paste_stack_order = "oldest_first"   # or "newest_first"
 
 [shortcuts]
 open_shelf = "shift+cmd+v"

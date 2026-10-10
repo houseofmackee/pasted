@@ -183,12 +183,12 @@ Done:
 - **Sensitive item auto-expiry** (opt-in): concealed and secret-looking copies kept for a chosen time instead of skipped; masked on cards (length hidden too), excluded from MCP, export, link previews and rule pinning; hidden from search at the deadline and swept within 5 s; SQLite `secure_delete` plus a WAL checkpoint so no copy remains in database files.
 - **Fuzzy search**: after exact (FTS/LIKE) results run out, close matches fill the page: fzf-style subsequences within a single token (nucleo-matcher) and 1 to 2 typos per word; filters apply; most recent 5,000 candidates; about 10 ms on 1,432 real items; "≈ Close match" on cards; in the shelf, `pasted search` (`--exact` to skip) and MCP; setting in General.
 - **Per-device statistics**: device filter in the Statistics window (every tile and chart), a Devices panel with item share, top app and last copy, `pasted stats --device` and a per-device summary; window sized to the screen and scrolls only when needed.
+- **Paste Stack order**: oldest first (default) or newest first, fixed per stack; queue logic in a tested module; panel shows the order and is now opaque for readable text.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
 Features
-- Paste Stack ordering option (last in, first out).
 - Accessibility: Accessibility-permission onboarding window, VoiceOver labels on shelf cards, reduced motion support.
 - Statistics: a table or "copy data" view of the chart values.
 

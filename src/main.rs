@@ -22,6 +22,7 @@ mod search;
 mod settings;
 mod shortcut;
 mod snippet;
+mod stack;
 mod store;
 mod transform;
 mod ui;

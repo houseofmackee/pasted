@@ -6,7 +6,7 @@
 //! across a modal dialog or menu; see `run_modal`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -226,7 +226,7 @@ struct PendingSnippet {
 
 /// Paste Stack: copies are queued and each Cmd+V pastes the next one.
 struct PasteStack {
-    queue: VecDeque<i64>,
+    queue: crate::stack::StackQueue,
     /// Global key monitor that notices Cmd+V in other apps.
     monitor: Option<Retained<AnyObject>>,
     panel: StackPanel,
@@ -797,42 +797,40 @@ impl App {
             }
         });
         let monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler);
-        let stack = PasteStack { queue: VecDeque::new(), monitor, panel: StackPanel::new(self.mtm) };
-        stack.panel.show(&[]);
+        // The order is fixed for the life of this stack.
+        let queue = crate::stack::StackQueue::new(self.settings.general.paste_stack_order);
+        let stack = PasteStack { queue, monitor, panel: StackPanel::new(self.mtm) };
+        stack.panel.show(&[], stack.queue.order());
         self.stack = Some(stack);
         self.rebuild_status_menu();
     }
 
     fn stack_items(&self) -> Vec<crate::model::Item> {
         let Some(stack) = &self.stack else { return Vec::new() };
-        stack.queue.iter().filter_map(|id| self.store.get(*id).ok().flatten()).collect()
+        stack.queue.in_paste_order().filter_map(|id| self.store.get(id).ok().flatten()).collect()
     }
 
     fn push_stack(&mut self, id: i64) {
         let Some(stack) = &mut self.stack else { return };
-        stack.queue.push_back(id);
-        // The pasteboard must hold the head of the queue, not the latest copy.
-        let head = stack.queue.front().copied();
-        if stack.queue.len() > 1
-            && let Some(head) = head
-        {
+        // The pasteboard must hold the item pasted next, which (oldest first)
+        // is not the copy just made.
+        if let Some(head) = stack.queue.push(id) {
             self.write_item(head, false);
         }
         let items = self.stack_items();
         if let Some(stack) = &self.stack {
-            stack.panel.show(&items);
+            stack.panel.show(&items, stack.queue.order());
         }
     }
 
     fn advance_stack(&mut self) {
         let Some(stack) = &mut self.stack else { return };
-        stack.queue.pop_front();
-        match stack.queue.front().copied() {
+        match stack.queue.advance() {
             Some(next) => {
                 self.write_item(next, false);
                 let items = self.stack_items();
                 if let Some(stack) = &self.stack {
-                    stack.panel.show(&items);
+                    stack.panel.show(&items, stack.queue.order());
                 }
             }
             None => self.toggle_stack(),
