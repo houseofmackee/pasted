@@ -92,7 +92,20 @@ pub enum Command {
     /// Manage pinboards.
     #[command(subcommand)]
     Board(BoardCommand),
-    /// Import from another clipboard manager.
+    /// Export history: .zip (full backup), .json (no images or files) or .csv.
+    Export {
+        /// Destination file; the extension picks the format unless --format is given.
+        path: Option<PathBuf>,
+        #[arg(long, value_name = "zip|json|csv")]
+        format: Option<String>,
+        /// Only items on this pinboard.
+        #[arg(long)]
+        board: Option<String>,
+        /// Only items matching a search, for example "type:link after:2026-09-01".
+        #[arg(long)]
+        query: Option<String>,
+    },
+    /// Import from another clipboard manager, or restore a backup.
     #[command(subcommand)]
     Import(ImportCommand),
     /// Delete history older than the retention setting and unused blob files.
@@ -146,6 +159,8 @@ pub enum ImportCommand {
         #[arg(long)]
         no_history: bool,
     },
+    /// Restore a Pasted backup archive (.zip) made by `pasted export`.
+    Archive { path: PathBuf },
 }
 
 fn print_items(items: &[Item], json: bool) -> Result<()> {
@@ -375,6 +390,33 @@ pub fn run(command: Command) -> Result<()> {
                 store.delete_pinboard(id)?;
             }
         },
+        Command::Import(ImportCommand::Archive { path }) => {
+            let summary = crate::export::restore(&mut store, &path)?;
+            println!("{}", summary.describe());
+        }
+        Command::Export { path, format, board, query } => {
+            let format = match (&format, &path) {
+                (Some(f), _) => crate::export::Format::parse(f).with_context(|| format!("unknown format {f:?}"))?,
+                (None, Some(p)) => crate::export::Format::from_path(p).unwrap_or(crate::export::Format::Zip),
+                (None, None) => crate::export::Format::Zip,
+            };
+            let mut path = path.unwrap_or_else(|| crate::export::default_file_name(format));
+            if crate::export::Format::from_path(&path) != Some(format) {
+                path.set_extension(format.extension());
+            }
+            let filter = match (board, query) {
+                (None, None) => None,
+                (board, query) => {
+                    let mut q = Query::parse(query.as_deref().unwrap_or(""));
+                    if board.is_some() {
+                        q.board_name = board;
+                    }
+                    Some(q)
+                }
+            };
+            let summary = crate::export::export(&store, &path, format, filter.as_ref())?;
+            println!("{}", summary.describe(&path));
+        }
         Command::Import(ImportCommand::Paste { dry_run, path, no_settings, no_history }) => {
             let install = match path {
                 Some(p) => PasteInstall::from_dir(&p)?,

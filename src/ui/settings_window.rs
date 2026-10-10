@@ -19,7 +19,7 @@ use crate::settings::{Retention, Settings};
 use crate::shortcut::{Modifiers, Shortcut};
 
 const W: f64 = 620.0;
-const H: f64 = 520.0;
+const H: f64 = 560.0;
 const LABEL_W: f64 = 190.0;
 const CONTROL_X: f64 = 210.0;
 
@@ -42,6 +42,8 @@ pub const OPEN_DATA_FOLDER: u8 = 65;
 pub const ADD_RULE: u8 = 66;
 pub const EDIT_RULE: u8 = 67;
 pub const REMOVE_RULE: u8 = 68;
+pub const EXPORT: u8 = 69;
+pub const RESTORE: u8 = 70;
 
 pub struct RecorderIvars {
     shortcut: Cell<Option<Shortcut>>,
@@ -660,6 +662,13 @@ impl SettingsWindow {
              new items. Skipped items are not imported; nothing already imported is removed.",
             CONTROL_X,
         );
+        let export = button("Export\u{2026}", tag(EXPORT, 0), target, mtm);
+        let y = f.row("Backup:", 30.0);
+        export.setFrame(rect(CONTROL_X - 6.0, y, export.frame().size.width, 30.0));
+        f.add(&export);
+        let restore = button("Restore Backup\u{2026}", tag(RESTORE, 0), target, mtm);
+        restore.setFrame(rect(CONTROL_X + export.frame().size.width, y, restore.frame().size.width, 30.0));
+        f.add(&restore);
         let folder = button("Open Data Folder", tag(OPEN_DATA_FOLDER, 0), target, mtm);
         let y = f.row("Files:", 30.0);
         folder.setFrame(rect(CONTROL_X - 6.0, y, folder.frame().size.width, 30.0));

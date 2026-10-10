@@ -177,13 +177,31 @@ Done:
 - **Snippet placeholders**: dates with offsets and formats, clipboard, uuid, cursor positioning, input fields with one dialog; pinboard items only, unknown braces untouched, escape with a backslash, Paste As > Without Placeholders, `pasted expand`.
 - **Rules**: conditions on app, item type and text pattern; actions expire after a duration or pin to a pinboard (pinned items never expire); Settings > Rules with an editor, invalid rules flagged, `pasted rules` and `pasted rules test`.
 - **Statistics window**: stat tiles, items added per day and by hour, types, top apps (tail folded into Other), most pasted; 7/30/90 day ranges; reference data-viz palette validated for both modes; tooltips and VoiceOver descriptions; `pasted stats --show`.
+- **Export and restore**: ZIP backup (manifest plus content-addressed data files, verified by hash on restore, size-limited entries), JSON and CSV, `--board` and `--query` filters, Settings > Data Export and Restore Backup running in the background; restore keeps duplicates within a backup and skips content already present.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
-- Phase 5 improvements: encryption at rest, MCP server, export.
-- App icon, universal binary, notarization and DMG, Sparkle updates (needs the deferred bundle id and signing team).
-- Paste Stack ordering option (LIFO) and an explicit Accessibility onboarding window.
+Features
+- Encryption at rest: SQLCipher with the key in the Keychain (opt-in).
+- MCP server: local, read access to history limited to allowed pinboards and item types.
+- Sensitive item auto-expiry: keep secret-looking items for N minutes instead of never saving them (opt-in).
+- Fuzzy search mode for short queries, alongside FTS.
+- Per-device statistics (device names exist for imported Paste history).
+- Paste Stack ordering option (last in, first out).
+- Accessibility: Accessibility-permission onboarding window, VoiceOver labels on shelf cards, reduced motion support.
+- Statistics: a table or "copy data" view of the chart values.
+
+Distribution
+- App icon (dialogs currently show a generic icon).
+- Universal binary (needs rustup for the x86_64 target).
+- Notarization, DMG and Sparkle updates (need the deferred bundle id and signing team).
+
+Testing
+- Capture and write-back integration tests against a private named pasteboard.
+- Snapshot tests for card layout metrics.
+- Benchmarks (`criterion`): 10k inserts; FTS search under 20 ms at 100k items.
+- Manual release checklist: full-screen apps, multiple displays, Spaces, Stage Manager, secure input fields.
 
 Known limitations:
 

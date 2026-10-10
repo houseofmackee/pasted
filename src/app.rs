@@ -19,8 +19,8 @@ use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSButton, NSControl,
     NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSImage, NSMenu,
     NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardItem, NSResponder, NSRunningApplication,
-    NSSearchFieldDelegate, NSSound, NSStatusBar, NSStatusItem, NSTextFieldDelegate, NSTextView, NSWindowDelegate,
-    NSWorkspace,
+    NSSavePanel, NSSearchFieldDelegate, NSSound, NSStatusBar, NSStatusItem, NSTextFieldDelegate, NSTextView,
+    NSWindowDelegate, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSData, NSDistributedNotificationCenter, NSNotification, NSNumber, NSObject,
@@ -254,6 +254,8 @@ pub struct App {
     asked_accessibility: bool,
     last_maintenance: Instant,
     import_job: Option<ImportResult>,
+    /// A running export or restore: dialog title and result slot.
+    file_job: Option<(&'static str, ImportResult)>,
     stack: Option<PasteStack>,
     pending_snippet: Option<PendingSnippet>,
     settings_window: Option<SettingsWindow>,
@@ -384,6 +386,7 @@ pub fn run() -> Result<()> {
         asked_accessibility: false,
         last_maintenance: Instant::now() - MAINTENANCE_INTERVAL,
         import_job: None,
+        file_job: None,
         stack: None,
         pending_snippet: None,
         settings_window: None,
@@ -1095,6 +1098,20 @@ impl App {
         }
     }
 
+    /// Finished export or restore: (title, result).
+    fn poll_file_job(&mut self) -> Option<(&'static str, Result<String, String>)> {
+        let (title, slot) = self.file_job.as_ref()?;
+        let done = slot.lock().ok()?.take()?;
+        let title = *title;
+        self.file_job = None;
+        if self.shelf.is_visible() {
+            self.shelf.reload_tabs(&self.store);
+            self.shelf.reload(&self.store);
+        }
+        self.refresh_settings_window();
+        Some((title, done))
+    }
+
     fn poll_import(&mut self) -> Option<Result<String, String>> {
         let done = self.import_job.as_ref()?.lock().ok()?.take()?;
         self.import_job = None;
@@ -1122,16 +1139,90 @@ fn tick() {
         app.maintenance();
         app.check_settings_file();
         app.expire_items();
-        app.poll_import()
-    })
-    .flatten();
-    if let Some(result) = finished {
+        (app.poll_import(), app.poll_file_job())
+    });
+    let Some((import, file_job)) = finished else { return };
+    if let Some(result) = import {
         let mtm = mtm();
         match result {
             Ok(summary) => dialogs::info("Import from Paste finished", &summary, mtm),
             Err(e) => dialogs::info("Import from Paste failed", &e, mtm),
         }
     }
+    if let Some((title, result)) = file_job {
+        let mtm = mtm();
+        match result {
+            Ok(summary) => dialogs::info(&format!("{title} finished"), &summary, mtm),
+            Err(e) => dialogs::info(&format!("{title} failed"), &e, mtm),
+        }
+    }
+}
+
+/// Runs `work` on a background thread with its own database connection and
+/// reports the outcome in a dialog when it finishes.
+fn start_file_job(title: &'static str, work: impl FnOnce(&mut Store) -> Result<String> + Send + 'static) {
+    if with(|app| app.file_job.is_some() || app.import_job.is_some()).unwrap_or(false) {
+        run_modal(|mtm| dialogs::info("Please wait", "Another import or export is still running.", mtm));
+        return;
+    }
+    let slot: ImportResult = Arc::new(Mutex::new(None));
+    with(|app| app.file_job = Some((title, slot.clone())));
+    std::thread::spawn(move || {
+        let result = Store::open_default().and_then(|mut store| work(&mut store)).map_err(|e| format!("{e:#}"));
+        if let Ok(mut guard) = slot.lock() {
+            *guard = Some(result);
+        }
+    });
+}
+
+fn export_history() {
+    use crate::export::Format;
+    let chosen = run_modal(|mtm| {
+        let panel = NSSavePanel::savePanel(mtm);
+        panel.setMessage(Some(&ns("Export clipboard history and pinboards")));
+        panel.setNameFieldStringValue(&ns(&crate::export::default_file_name(Format::Zip).to_string_lossy()));
+        let formats = objc2_app_kit::NSPopUpButton::initWithFrame_pullsDown(
+            objc2_app_kit::NSPopUpButton::alloc(mtm),
+            crate::ui::rect(0.0, 0.0, 380.0, 26.0),
+            false,
+        );
+        for f in Format::ALL {
+            formats.addItemWithTitle(&ns(f.label()));
+        }
+        let accessory = objc2_app_kit::NSView::initWithFrame(
+            objc2_app_kit::NSView::alloc(mtm),
+            crate::ui::rect(0.0, 0.0, 420.0, 40.0),
+        );
+        formats.setFrame(crate::ui::rect(20.0, 8.0, 380.0, 26.0));
+        accessory.addSubview(&formats);
+        panel.setAccessoryView(Some(&accessory));
+        if panel.runModal() != NSModalResponseOK {
+            return None;
+        }
+        let format = Format::ALL.get(formats.indexOfSelectedItem().max(0) as usize).copied().unwrap_or(Format::Zip);
+        let mut path = std::path::PathBuf::from(panel.URL()?.path()?.to_string());
+        if Format::from_path(&path) != Some(format) {
+            path.set_extension(format.extension());
+        }
+        Some((path, format))
+    });
+    let Some((path, format)) = chosen else { return };
+    start_file_job("Export", move |store| {
+        let summary = crate::export::export(store, &path, format, None)?;
+        Ok(summary.describe(&path))
+    });
+}
+
+fn restore_backup() {
+    let chosen = run_modal(|mtm| {
+        let panel = NSOpenPanel::openPanel(mtm);
+        panel.setCanChooseDirectories(false);
+        panel.setAllowsMultipleSelection(false);
+        panel.setMessage(Some(&ns("Choose a Pasted backup (.zip). Items you already have are skipped.")));
+        (panel.runModal() == NSModalResponseOK).then(|| panel.URL()).flatten()
+    });
+    let Some(path) = chosen.and_then(|u| u.path()).map(|p| std::path::PathBuf::from(p.to_string())) else { return };
+    start_file_job("Restore", move |store| Ok(crate::export::restore(store, &path)?.describe()));
 }
 
 pub fn on_hotkey(action: HotkeyAction) {
@@ -1481,6 +1572,8 @@ fn dispatch(raw_tag: isize) {
         }
         settings_window::ADD_APP => add_excluded_app(),
         settings_window::ADD_RULE => edit_rule(None),
+        settings_window::EXPORT => export_history(),
+        settings_window::RESTORE => restore_backup(),
         settings_window::EDIT_RULE => {
             if let Some(row) = with(|app| app.settings_window.as_ref().and_then(|w| w.selected_rule_row())).flatten() {
                 edit_rule(Some(row));

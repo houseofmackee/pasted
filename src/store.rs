@@ -1,6 +1,6 @@
 //! SQLite storage for items, representations, pinboards and search.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -157,6 +157,25 @@ pub struct Report {
     pub history_items: i64,
     pub pinboards: i64,
     pub bytes: i64,
+}
+
+/// Everything about an item except its representations, for export.
+pub struct ExportRow {
+    pub id: i64,
+    pub kind: String,
+    pub title: Option<String>,
+    pub text: String,
+    pub meta: String,
+    pub url: Option<String>,
+    pub app_bundle_id: Option<String>,
+    pub app_name: Option<String>,
+    pub device: Option<String>,
+    pub created_at: i64,
+    pub timestamp: i64,
+    pub use_count: i64,
+    pub last_used_at: Option<i64>,
+    pub in_history: bool,
+    pub ocr: Option<String>,
 }
 
 pub struct Store {
@@ -892,6 +911,79 @@ impl Store {
             pinboards: stats.pinboards,
             bytes: stats.bytes,
         })
+    }
+
+    /// All items, newest first, for export.
+    pub fn export_rows(&self) -> Result<Vec<ExportRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT i.id, i.kind, i.title, i.text, i.meta, json_extract(i.meta, '$.url'), a.bundle_id, a.name,
+                    i.device, i.created_at, i.timestamp, i.use_count, i.last_used_at, i.in_history, o.text
+             FROM items i LEFT JOIN apps a ON a.id = i.app_id LEFT JOIN ocr o ON o.item_id = i.id
+             ORDER BY i.timestamp DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(ExportRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                title: r.get(2)?,
+                text: r.get(3)?,
+                meta: r.get(4)?,
+                url: r.get(5)?,
+                app_bundle_id: r.get(6)?,
+                app_name: r.get(7)?,
+                device: r.get(8)?,
+                created_at: r.get(9)?,
+                timestamp: r.get(10)?,
+                use_count: r.get(11)?,
+                last_used_at: r.get(12)?,
+                in_history: r.get(13)?,
+                ocr: r.get(14)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Pinboard names per item id.
+    pub fn item_pinboard_names(&self) -> Result<HashMap<i64, Vec<String>>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT pi.item_id, p.name FROM pinboard_items pi JOIN pinboards p ON p.id = pi.pinboard_id
+             ORDER BY p.sort, pi.sort",
+        )?;
+        let mut out: HashMap<i64, Vec<String>> = HashMap::new();
+        for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))? {
+            let (id, name) = row?;
+            out.entry(id).or_default().push(name);
+        }
+        Ok(out)
+    }
+
+    pub fn all_link_previews(&self) -> Result<Vec<crate::link_preview::LinkPreview>> {
+        let mut stmt =
+            self.conn.prepare("SELECT url, title, description, image, icon FROM link_previews WHERE status = 'ok'")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(crate::link_preview::LinkPreview {
+                url: r.get(0)?,
+                title: r.get(1)?,
+                description: r.get(2)?,
+                image: r.get(3)?,
+                icon: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn all_checksums(&self) -> Result<HashSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT DISTINCT checksum FROM items")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn set_usage(&self, id: i64, use_count: i64, last_used_at: Option<i64>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE items SET use_count = ?2, last_used_at = ?3 WHERE id = ?1",
+            params![id, use_count, last_used_at],
+        )?;
+        Ok(())
     }
 
     pub fn begin_import(&self, source: &str) -> Result<i64> {

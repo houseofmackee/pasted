@@ -4,6 +4,7 @@ compile_error!("pasted only supports macOS");
 mod app;
 mod cli;
 mod clipboard;
+mod export;
 mod hotkeys;
 mod import;
 mod link_preview;
@@ -33,6 +34,11 @@ fn main() -> anyhow::Result<()> {
         .init();
     match cli::Cli::parse().command {
         None | Some(cli::Command::Run) => app::run(),
-        Some(command) => cli::run(command),
+        Some(command) => {
+            // Exit quietly when output is piped into something like `head`.
+            // SAFETY: restoring the default SIGPIPE action before any output.
+            unsafe { libc::signal(libc::SIGPIPE, libc::SIG_DFL) };
+            cli::run(command)
+        }
     }
 }

@@ -16,6 +16,7 @@ Everything stays on your Mac: no accounts and no telemetry. The only network acc
 - Snippet placeholders in pinboard items, expanded when pasting (see below)
 - Rules that expire or pin new copies automatically (see below)
 - Statistics window: items added per day and by time of day, types, top apps and most pasted items, over 7, 30 or 90 days, in light and dark mode
+- Export to a restorable ZIP backup, JSON or CSV
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -106,6 +107,8 @@ pasted import paste --dry-run     # preview an import from Paste
 pasted open                       # show the shelf of the running app
 pasted settings --tab privacy     # show a Settings tab
 pasted preview <url>              # fetch a link preview (debugging)
+pasted export backup.zip         # also .json or .csv; --board and --query filter
+pasted import archive backup.zip # restore a backup
 pasted stats [--days 30]          # summary in the terminal; --show opens the Statistics window
 pasted paths
 ```
@@ -121,6 +124,16 @@ Link previews Paste already stored (titles, images, icons) come along, so those 
 Imports copy history as it is by default. To leave sensitive items behind, choose what to skip in Settings > Data (or the `[import]` section of the settings file): items from ignored apps, API keys and tokens, text matching your ignore patterns, and short snippets that mention a password. Each check is optional and off by default; already imported items are never removed.
 
 The importer copies Paste's database to a temporary directory and reads the copy, so Paste's own files are never modified. Running it again only adds items that are new since the last import. History retention and shortcuts are taken from Paste's settings. Quit Paste first for the most complete import.
+
+## Export and backup
+
+`pasted export` (or Settings > Data > Export) writes:
+
+- **`.zip`**: a full backup with every image, file and format, pinboards, OCR text and link previews. Restore it with `pasted import archive <file>` or Settings > Data > Restore Backup; items you already have are skipped, so restoring twice is harmless.
+- **`.json`**: the same details without images or files, for scripts.
+- **`.csv`**: one row per item for spreadsheets.
+
+Limit an export with `--board NAME` or `--query "type:link after:2026-09-01"`. Restored history older than your retention setting is removed at the next cleanup, as with imports.
 
 ## Settings
 
