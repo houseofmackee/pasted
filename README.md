@@ -13,6 +13,7 @@ Everything stays on your Mac: no accounts and no telemetry. The only network acc
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
 - Paste As (⌥Return or right-click): case changes, trimming, single line, tracking-free links, pretty or minified JSON, sorted or unique lines, URL encoding, and Markdown as formatted text; only options that change the text are shown
 - Optional automatic cleanup on every paste: trim whitespace and remove link tracking parameters (both off by default)
+- Snippet placeholders in pinboard items, expanded when pasting (see below)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -52,6 +53,22 @@ Pasting directly into other apps needs Accessibility permission (System Settings
 
 Right-click a card for more actions, including pinning. Drag cards into other apps.
 
+## Snippets
+
+Items on a pinboard can contain placeholders that are filled in when you paste them. Clipboard history is never expanded, and only the names below are placeholders, so code or JSON with braces is left alone.
+
+| Placeholder | Pastes |
+| --- | --- |
+| `{date}` `{time}` `{datetime}` | current date and time; add a strftime format, for example `{date:%d/%m/%Y}` |
+| `{weekday}` `{month}` `{year}` | parts of the date |
+| `{date+7d}` `{weekday-1w}` | offsets in days (`d`) or weeks (`w`) |
+| `{clipboard}` | the text currently on the clipboard |
+| `{uuid}` | a random UUID |
+| `{cursor}` | where the cursor is left after pasting |
+| `{input:Name}` | asked for in a dialog when you paste |
+
+Write `\{date}` to paste the braces literally. To paste a snippet without expanding it, use Paste As > Without Placeholders. Expansion can be turned off in Settings > Pasting.
+
 ## Command line
 
 ```sh
@@ -61,6 +78,7 @@ pasted show 42                    # print an item's text
 pasted copy 42 [--plain]          # put an item back on the clipboard
 pasted copy 42 --as snake         # copy with a cleanup applied
 pbpaste | pasted transform clean-links   # cleanups work on stdin too (--list shows all)
+echo 'Due {date+7d}' | pasted expand --set Name=Ada   # expand snippet placeholders
 echo hi | pasted add              # save text
 pasted pin 42 Snippets            # pin (creates the pinboard if needed)
 pasted board list
@@ -122,6 +140,7 @@ visible_during_screen_sharing = false
 [pasting]                       # automatic cleanup on paste, off by default
 trim_whitespace = false
 clean_links = false
+expand_placeholders = true      # snippets on pinboards only
 
 [import]                        # optional privacy checks for imports, all off by default
 skip_excluded_apps = false

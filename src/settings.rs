@@ -128,13 +128,22 @@ impl Default for Privacy {
     }
 }
 
-/// Cleanups applied automatically to plain text and links when pasting.
-/// Off by default so pastes match what was copied.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Options applied when pasting. The automatic cleanups are off by default
+/// so pastes match what was copied.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Pasting {
     pub trim_whitespace: bool,
     pub clean_links: bool,
+    /// Expand `{date}`, `{cursor}`, `{input:Name}` and other placeholders in
+    /// pinboard items. History items are never expanded.
+    pub expand_placeholders: bool,
+}
+
+impl Default for Pasting {
+    fn default() -> Self {
+        Pasting { trim_whitespace: false, clean_links: false, expand_placeholders: true }
+    }
 }
 
 impl Pasting {

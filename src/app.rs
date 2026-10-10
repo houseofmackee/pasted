@@ -6,7 +6,7 @@
 //! across a modal dialog or menu; see `run_modal`.
 
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -23,7 +23,7 @@ use objc2_app_kit::{
     NSWorkspace,
 };
 use objc2_foundation::{
-    MainThreadMarker, NSArray, NSBundle, NSData, NSDistributedNotificationCenter, NSNotification, NSObject,
+    MainThreadMarker, NSArray, NSBundle, NSData, NSDistributedNotificationCenter, NSNotification, NSNumber, NSObject,
     NSObjectProtocol, NSString, NSTimer, NSURL,
 };
 
@@ -67,6 +67,8 @@ const ITEM_UNPIN: u8 = 38;
 const ITEM_DELETE: u8 = 39;
 const ITEM_OPEN: u8 = 40;
 const ITEM_PASTE_AS: u8 = 41;
+/// Transform index meaning "paste the snippet without expanding placeholders".
+const RAW_SNIPPET: i64 = 0xff;
 
 const POLL_INTERVAL: f64 = 0.3;
 /// Posted by `pasted open` to show the shelf of the running app.
@@ -137,6 +139,18 @@ define_class!(
             with(|app| app.advance_stack());
         }
 
+        #[unsafe(method(snippetInputs:))]
+        fn snippet_inputs(&self, _obj: Option<&AnyObject>) {
+            snippet_inputs();
+        }
+
+        #[unsafe(method(moveCursor:))]
+        fn move_cursor(&self, n: Option<&NSNumber>) {
+            if let Some(n) = n {
+                crate::paste::post_left_arrows(n.as_usize());
+            }
+        }
+
         #[unsafe(method(postPaste:))]
         fn post_paste(&self, _obj: Option<&AnyObject>) {
             crate::paste::post_cmd_v();
@@ -184,6 +198,14 @@ static LINK_PREVIEWS_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic:
 
 type ImportResult = Arc<Mutex<Option<Result<String, String>>>>;
 
+/// A snippet waiting for its `{input:...}` values.
+struct PendingSnippet {
+    id: i64,
+    plain: bool,
+    then_paste: bool,
+    labels: Vec<String>,
+}
+
 /// Paste Stack: copies are queued and each Cmd+V pastes the next one.
 struct PasteStack {
     queue: VecDeque<i64>,
@@ -215,6 +237,7 @@ pub struct App {
     last_maintenance: Instant,
     import_job: Option<ImportResult>,
     stack: Option<PasteStack>,
+    pending_snippet: Option<PendingSnippet>,
     settings_window: Option<SettingsWindow>,
     /// Modification time of settings.toml when last read or written, to
     /// notice hand edits.
@@ -329,6 +352,7 @@ pub fn run() -> Result<()> {
         last_maintenance: Instant::now() - MAINTENANCE_INTERVAL,
         import_job: None,
         stack: None,
+        pending_snippet: None,
         settings_window: None,
         settings_mtime: settings_mtime(),
         last_settings_check: Instant::now(),
@@ -728,6 +752,10 @@ impl App {
 
     fn paste(&mut self, id: i64, plain: bool) {
         let plain = plain ^ self.settings.general.paste_plain_text_by_default;
+        if let Some(item) = self.snippet_item(id) {
+            self.start_snippet(item, plain, true);
+            return;
+        }
         // Automatic cleanup applies to plain text and links; formatted text is left as is.
         if (self.settings.pasting.trim_whitespace || self.settings.pasting.clean_links)
             && let Ok(Some(item)) = self.store.get(id)
@@ -757,6 +785,12 @@ impl App {
 
     /// Puts transformed text (and HTML or a URL, if any) on the pasteboard and pastes it.
     fn paste_output(&mut self, id: i64, output: crate::transform::Output, url: Option<String>) {
+        self.write_output(id, output, url);
+        self.finish_paste();
+    }
+
+    /// Puts transformed text (and HTML or a URL, if any) on the pasteboard.
+    fn write_output(&mut self, id: i64, output: crate::transform::Output, url: Option<String>) {
         use crate::model::{Representation, UTI_HTML, UTI_PLAIN_TEXT, UTI_URL};
         self.close_shelf();
         let mut reps = vec![Representation { index: 0, uti: UTI_PLAIN_TEXT.into(), data: output.text.into_bytes() }];
@@ -770,7 +804,6 @@ impl App {
         self.own_change = Some(cc);
         self.last_change = cc;
         let _ = self.store.mark_used(id);
-        self.finish_paste();
     }
 
     /// Presses Cmd+V in the app that was active before the shelf opened.
@@ -802,11 +835,23 @@ impl App {
             return None;
         }
         let options = crate::transform::Transform::applicable(&item.text);
-        if options.is_empty() {
+        let raw = self.snippet_item(item.id).is_some();
+        if options.is_empty() && !raw {
             return None;
         }
         let menu = NSMenu::new(self.mtm);
         let t: &AnyObject = &self.target;
+        if raw {
+            menu.addItem(&menu_item(
+                "Without Placeholders",
+                tag(ITEM_PASTE_AS, item.id << 8 | RAW_SNIPPET),
+                t,
+                self.mtm,
+            ));
+            if !options.is_empty() {
+                menu.addItem(&NSMenuItem::separatorItem(self.mtm));
+            }
+        }
         for (transform, _) in options {
             let arg = item.id << 8 | transform.index() as i64;
             menu.addItem(&menu_item(transform.label(), tag(ITEM_PASTE_AS, arg), t, self.mtm));
@@ -815,8 +860,72 @@ impl App {
     }
 
     fn copy(&mut self, id: i64) {
+        if let Some(item) = self.snippet_item(id) {
+            self.start_snippet(item, false, false);
+            return;
+        }
         self.close_shelf();
         self.write_item(id, false);
+    }
+
+    /// The item, if pasting it should expand snippet placeholders: it is on a
+    /// pinboard, is text, and contains placeholders.
+    fn snippet_item(&self, id: i64) -> Option<crate::model::Item> {
+        if !self.settings.pasting.expand_placeholders {
+            return None;
+        }
+        let item = self.store.get(id).ok()??;
+        let text_like = matches!(item.kind, ItemKind::Text | ItemKind::RichText | ItemKind::Code | ItemKind::Link);
+        let on_pinboard = !self.store.item_pinboards(id).unwrap_or_default().is_empty();
+        (text_like && on_pinboard && crate::snippet::has_placeholders(&item.text)).then_some(item)
+    }
+
+    /// Expands a snippet, asking for `{input:...}` values first if it has any.
+    fn start_snippet(&mut self, item: crate::model::Item, plain: bool, then_paste: bool) {
+        let labels = crate::snippet::inputs(&item.text);
+        self.close_shelf();
+        if labels.is_empty() {
+            self.finish_snippet(item.id, plain, then_paste, HashMap::new());
+            return;
+        }
+        self.pending_snippet = Some(PendingSnippet { id: item.id, plain, then_paste, labels });
+        // The input dialog is modal, so it runs after this callback returns.
+        unsafe {
+            let _: () = msg_send![&*self.target, performSelector: sel!(snippetInputs:), withObject: None::<&AnyObject>, afterDelay: 0.0f64];
+        }
+    }
+
+    fn finish_snippet(&mut self, id: i64, plain: bool, then_paste: bool, inputs: HashMap<String, String>) {
+        let Ok(Some(item)) = self.store.get(id) else { return };
+        let clipboard = self.pasteboard.stringForType(&ns(crate::model::UTI_PLAIN_TEXT)).map(|s| s.to_string());
+        let ctx = crate::snippet::Context { now: chrono::Local::now(), clipboard, inputs };
+        let expanded = crate::snippet::expand(&item.text, &ctx);
+        let html = if plain || item.kind != ItemKind::RichText {
+            None
+        } else {
+            self.store
+                .representation(id, crate::model::UTI_HTML)
+                .ok()
+                .flatten()
+                .map(|h| crate::snippet::expand_html(&String::from_utf8_lossy(&h), &ctx))
+        };
+        let cursor = expanded.cursor_from_end.filter(|n| *n > 0 && html.is_none());
+        let output = crate::transform::Output { text: expanded.text, html };
+        if !then_paste {
+            self.write_output(id, output, None);
+            return;
+        }
+        self.paste_output(id, output, None);
+        if let Some(n) = cursor
+            && self.settings.general.paste_directly
+            && crate::paste::is_trusted()
+        {
+            let n = NSNumber::new_usize(n);
+            // After the paste lands, move the cursor back to where {cursor} was.
+            unsafe {
+                let _: () = msg_send![&*self.target, performSelector: sel!(moveCursor:), withObject: Some(&*n), afterDelay: 0.3f64];
+            }
+        }
     }
 
     fn delete(&mut self, id: i64) {
@@ -982,6 +1091,17 @@ fn shelf_command(command: Sel) -> bool {
         _ => false,
     })
     .unwrap_or(false)
+}
+
+/// Asks for a pending snippet's `{input:...}` values, then pastes it.
+fn snippet_inputs() {
+    let Some(p) = with(|app| app.pending_snippet.take()).flatten() else { return };
+    let message = "Values are inserted where the snippet has {input:...} placeholders.";
+    let Some(values) = run_modal(|mtm| dialogs::prompt_fields("Fill In Snippet", message, &p.labels, mtm)) else {
+        return;
+    };
+    let inputs: HashMap<String, String> = p.labels.into_iter().zip(values).collect();
+    with(|app| app.finish_snippet(p.id, p.plain, p.then_paste, inputs));
 }
 
 /// Pops the "Paste As" menu over the selected card. The menu runs its own
@@ -1307,7 +1427,13 @@ fn dispatch(raw_tag: isize) {
         }
         ITEM_PASTE_AS => {
             let (id, index) = (arg >> 8, (arg & 0xff) as usize);
-            if let Some(t) = crate::transform::Transform::ALL.get(index).copied() {
+            if index == RAW_SNIPPET as usize {
+                with(|app| {
+                    if let Ok(Some(item)) = app.store.get(id) {
+                        app.paste_output(id, crate::transform::Output { text: item.text, html: None }, None);
+                    }
+                });
+            } else if let Some(t) = crate::transform::Transform::ALL.get(index).copied() {
                 with(|app| app.paste_as(id, t));
             }
         }

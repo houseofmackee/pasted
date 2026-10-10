@@ -60,6 +60,12 @@ pub enum Command {
         #[arg(long = "as", value_name = "TRANSFORM")]
         transform: Option<String>,
     },
+    /// Expand snippet placeholders in stdin and print the result.
+    Expand {
+        /// Values for {input:Name} placeholders, as Name=value.
+        #[arg(long = "set", value_name = "NAME=VALUE")]
+        values: Vec<String>,
+    },
     /// Apply a cleanup to stdin and print the result.
     Transform {
         /// Transform name, for example `clean-links` or `pretty-json`.
@@ -237,6 +243,24 @@ pub fn run(command: Command) -> Result<()> {
                 )?
                 .id();
             println!("{id}");
+        }
+        Command::Expand { values } => {
+            let mut input = String::new();
+            std::io::stdin().read_to_string(&mut input)?;
+            let mut ctx = crate::snippet::Context::now();
+            ctx.clipboard = pasteboard::general()
+                .stringForType(&objc2_foundation::NSString::from_str(UTI_PLAIN_TEXT))
+                .map(|s| s.to_string());
+            for v in values {
+                let (k, val) = v.split_once('=').with_context(|| format!("expected NAME=VALUE, got {v:?}"))?;
+                ctx.inputs.insert(k.trim().to_string(), val.to_string());
+            }
+            for label in crate::snippet::inputs(&input) {
+                if !ctx.inputs.contains_key(&label) {
+                    eprintln!("note: no value for {{input:{label}}}; use --set \"{label}=...\"");
+                }
+            }
+            print!("{}", crate::snippet::expand(&input, &ctx).text);
         }
         Command::Transform { name, list } => {
             if list || name.is_none() {

@@ -253,6 +253,7 @@ pub struct SettingsWindow {
     link_previews: Retained<NSButton>,
     trim_whitespace: Retained<NSButton>,
     clean_links: Retained<NSButton>,
+    expand_placeholders: Retained<NSButton>,
     accessibility: Retained<NSTextField>,
     login_note: Retained<NSTextField>,
     open_shelf: Retained<ShortcutRecorder>,
@@ -415,6 +416,7 @@ impl SettingsWindow {
             "Paste as plain text by default (\u{21e7}Return does the opposite)",
             "Trim spaces and blank lines around text",
             "Remove tracking parameters from links (utm_, fbclid, \u{2026})",
+            "Expand placeholders in pinboard snippets",
         ]
         .iter()
         .enumerate()
@@ -424,6 +426,7 @@ impl SettingsWindow {
                 match i {
                     0 => "When pasting:",
                     2 => "Clean up automatically:",
+                    4 => "Snippets:",
                     _ => "",
                 },
                 20.0,
@@ -432,6 +435,11 @@ impl SettingsWindow {
             f.add(&b);
             boxes.push(b);
         }
+        f.note(
+            "Placeholders: {date} {time} {datetime} {weekday} {month} {year}, offsets like {date+7d}, formats like \
+             {date:%d/%m/%Y}, {clipboard}, {uuid}, {cursor}, {input:Name}. Write \\{date} to keep it literal.",
+            CONTROL_X,
+        );
         f.note(
             "Automatic cleanup applies to plain text and links; formatted text keeps its formatting. For one-off \
              changes, press \u{2325}Return in the shelf or right-click a card and choose Paste As.",
@@ -450,8 +458,8 @@ impl SettingsWindow {
             CONTROL_X,
         );
         add_tab("Pasting", &f.view);
-        let [paste_directly, plain_default, trim_whitespace, clean_links]: [Retained<NSButton>; 4] =
-            boxes.try_into().unwrap_or_else(|_| unreachable!());
+        let [paste_directly, plain_default, trim_whitespace, clean_links, expand_placeholders]: [Retained<NSButton>;
+            5] = boxes.try_into().unwrap_or_else(|_| unreachable!());
 
         // Shortcuts
         let mut f = Form::new(mtm);
@@ -625,6 +633,7 @@ impl SettingsWindow {
             link_previews,
             trim_whitespace,
             clean_links,
+            expand_placeholders,
             accessibility,
             login_note,
             open_shelf,
@@ -677,6 +686,7 @@ impl SettingsWindow {
         set_checked(&self.link_previews, g.link_previews);
         set_checked(&self.trim_whitespace, s.pasting.trim_whitespace);
         set_checked(&self.clean_links, s.pasting.clean_links);
+        set_checked(&self.expand_placeholders, s.pasting.expand_placeholders);
         self.open_shelf.set_shortcut(s.shortcuts.open_shelf);
         self.paste_stack.set_shortcut(s.shortcuts.paste_stack);
         self.next_board.set_shortcut(s.shortcuts.next_pinboard);
@@ -712,6 +722,7 @@ impl SettingsWindow {
         g.link_previews = checked(&self.link_previews);
         s.pasting.trim_whitespace = checked(&self.trim_whitespace);
         s.pasting.clean_links = checked(&self.clean_links);
+        s.pasting.expand_placeholders = checked(&self.expand_placeholders);
         let sc = &mut s.shortcuts;
         for (rec, target) in [
             (&self.open_shelf, &mut sc.open_shelf),

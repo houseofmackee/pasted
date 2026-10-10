@@ -43,6 +43,33 @@ pub fn request_trust() -> bool {
     unsafe { AXIsProcessTrustedWithOptions(Retained::as_ptr(&options).cast()) }
 }
 
+/// Presses the left arrow `n` times (used to place the cursor after a snippet).
+pub fn post_left_arrows(n: usize) {
+    const KEY_LEFT: u16 = 123;
+    if !is_trusted() {
+        return;
+    }
+    // SAFETY: standard CoreGraphics event creation; every created object is released.
+    unsafe {
+        let source = CGEventSourceCreate(KCG_EVENT_SOURCE_STATE_COMBINED_SESSION);
+        for _ in 0..n.min(5000) {
+            for down in [true, false] {
+                let event = CGEventCreateKeyboardEvent(source, KEY_LEFT, down);
+                if event.is_null() {
+                    continue;
+                }
+                // Clear modifiers so a held key does not turn this into a selection.
+                CGEventSetFlags(event, 0);
+                CGEventPost(KCG_HID_EVENT_TAP, event);
+                CFRelease(event);
+            }
+        }
+        if !source.is_null() {
+            CFRelease(source);
+        }
+    }
+}
+
 /// Posts Cmd+V. Returns false if Accessibility permission is missing.
 pub fn post_cmd_v() -> bool {
     if !is_trusted() {

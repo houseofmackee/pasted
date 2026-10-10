@@ -174,11 +174,12 @@ Done:
 - **Rich text rendering**: RTF through AppKit, HTML through a small built-in converter (no WebKit, no remote content); fonts scaled to the card, background highlights dropped, low-contrast source colors replaced. Preview panel made opaque for readable text.
 - **Optional import privacy filter**: four independent checks (ignored apps, secrets, ignore patterns, password mentions), all off by default.
 - **Text cleanup on paste**: Paste As menu (17 transforms, only those that change the text are offered), optional automatic trimming and link tracking removal, Pasting settings tab, `pasted copy --as` and `pasted transform`.
+- **Snippet placeholders**: dates with offsets and formats, clipboard, uuid, cursor positioning, input fields with one dialog; pinboard items only, unknown braces untouched, escape with a backslash, Paste As > Without Placeholders, `pasted expand`.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
-- Phase 5 improvements: rule engine actions (auto-expire, auto-pin), snippet placeholders, encryption at rest, statistics view, MCP server, export.
+- Phase 5 improvements: rule engine actions (auto-expire, auto-pin), encryption at rest, statistics view, MCP server, export.
 - App icon, universal binary, notarization and DMG, Sparkle updates (needs the deferred bundle id and signing team).
 - Paste Stack ordering option (LIFO) and an explicit Accessibility onboarding window.
 

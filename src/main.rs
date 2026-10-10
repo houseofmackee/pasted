@@ -16,6 +16,7 @@ mod rich;
 mod search;
 mod settings;
 mod shortcut;
+mod snippet;
 mod store;
 mod transform;
 mod ui;
