@@ -47,6 +47,9 @@ pub enum Command {
         limit: usize,
         #[arg(long)]
         json: bool,
+        /// Only exact matches (no typo-tolerant close matches).
+        #[arg(long)]
+        exact: bool,
     },
     /// Print an item's text to stdout.
     Show { id: i64 },
@@ -253,8 +256,13 @@ pub fn run(command: Command) -> Result<()> {
             let q = Query { board_name: board, ..Query::default() };
             print_items(&store.search(&q, limit, 0)?, json)?;
         }
-        Command::Search { query, limit, json } => {
-            print_items(&store.search(&Query::parse(&query.join(" ")), limit, 0)?, json)?;
+        Command::Search { query, limit, json, exact } => {
+            let fuzzy = !exact && Settings::load(&crate::paths::settings_path()?)?.general.fuzzy_search;
+            let (items, _, close) = store.search_with_fuzzy(&Query::parse(&query.join(" ")), limit, 0, fuzzy)?;
+            print_items(&items, json)?;
+            if close > 0 && !json {
+                eprintln!("({close} close matches, not exact; use --exact to hide them)");
+            }
         }
         Command::Show { id } => {
             let item = require(&store, id)?;

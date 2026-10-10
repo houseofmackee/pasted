@@ -126,6 +126,8 @@ pub struct CardContent<'a> {
     pub link: Option<LinkPreview>,
     /// Styled text for rich text items.
     pub rich: Option<Retained<objc2_foundation::NSAttributedString>>,
+    /// Found by fuzzy matching rather than an exact match.
+    pub close_match: bool,
     pub shortcut_number: Option<usize>,
 }
 
@@ -338,7 +340,12 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
         card.addSubview(&iv);
         footer_x += 21.0;
     }
-    let footer = label(&footer_text(item), 11.0, false, mtm);
+    let footer_value = if content.close_match {
+        format!("\u{2248} Close match \u{00b7} {}", footer_text(item))
+    } else {
+        footer_text(item)
+    };
+    let footer = label(&footer_value, 11.0, false, mtm);
     footer.setTextColor(Some(&NSColor::secondaryLabelColor()));
     footer.setFrame(rect(footer_x, 6.0, w - footer_x - PAD - 34.0, 16.0));
     card.addSubview(&footer);

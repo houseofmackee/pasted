@@ -181,12 +181,12 @@ Done:
 - **Encryption at rest** (opt-in): SQLCipher via CommonCrypto (no OpenSSL), AES-256-GCM sealed blob files with keyed names, master key in the Keychain with derived subkeys, encryption detected from the files, conversion builds a copy and swaps it in, workers gated during the switch; Settings > Privacy and `pasted encryption`.
 - **MCP server**: `pasted mcp`, dual-era (2026-07-28 stateless with `server/discover`, plus `initialize` for 2025-11-25 and earlier), read-only tools with `readOnlyHint`, structured output, access off by default and limited by history/pinboard/type settings, per-request access log, Settings > AI with setup helpers.
 - **Sensitive item auto-expiry** (opt-in): concealed and secret-looking copies kept for a chosen time instead of skipped; masked on cards (length hidden too), excluded from MCP, export, link previews and rule pinning; hidden from search at the deadline and swept within 5 s; SQLite `secure_delete` plus a WAL checkpoint so no copy remains in database files.
+- **Fuzzy search**: after exact (FTS/LIKE) results run out, close matches fill the page: fzf-style subsequences within a single token (nucleo-matcher) and 1 to 2 typos per word; filters apply; most recent 5,000 candidates; about 10 ms on 1,432 real items; "≈ Close match" on cards; in the shelf, `pasted search` (`--exact` to skip) and MCP; setting in General.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
 Features
-- Fuzzy search mode for short queries, alongside FTS.
 - Per-device statistics (device names exist for imported Paste history).
 - Paste Stack ordering option (last in, first out).
 - Accessibility: Accessibility-permission onboarding window, VoiceOver labels on shelf cards, reduced motion support.

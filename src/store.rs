@@ -479,7 +479,78 @@ impl Store {
         })
     }
 
+    /// Exact search: substring matches (trigram FTS, or LIKE for short
+    /// words) plus filters, newest first (pinboard order on a board).
     pub fn search(&self, q: &Query, limit: usize, offset: usize) -> Result<Vec<Item>> {
+        let Some((sql, args)) = self.search_sql(q, ITEM_COLUMNS, limit, offset)? else { return Ok(Vec::new()) };
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params_from_iter(args), item_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn search_ids(&self, q: &Query) -> Result<HashSet<i64>> {
+        let Some((sql, args)) = self.search_sql(q, "i.id", i64::MAX as usize, 0)? else { return Ok(HashSet::new()) };
+        let mut stmt = self.conn.prepare_cached(&sql)?;
+        let rows = stmt.query_map(params_from_iter(args), |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Exact results first; when they run out (and `fuzzy` is on), close
+    /// matches fill the rest of the page. Returns the items, whether more
+    /// pages may follow, and how many items at the end are fuzzy matches.
+    pub fn search_with_fuzzy(
+        &self,
+        q: &Query,
+        limit: usize,
+        offset: usize,
+        fuzzy: bool,
+    ) -> Result<(Vec<Item>, bool, usize)> {
+        let mut items = self.search(q, limit, offset)?;
+        if items.len() == limit || !fuzzy || q.text.trim().is_empty() {
+            let more = items.len() == limit;
+            return Ok((items, more, 0));
+        }
+        let exact = self.search_ids(q)?;
+        let close = self.fuzzy_search(q, &exact, limit - items.len())?;
+        let n = close.len();
+        items.extend(close);
+        Ok((items, false, n))
+    }
+
+    /// Items that fuzzily match `q.text` among the most recent candidates
+    /// that pass `q`'s filters, best match first, skipping `exclude`.
+    pub fn fuzzy_search(&self, q: &Query, exclude: &HashSet<i64>, limit: usize) -> Result<Vec<Item>> {
+        const CANDIDATES: usize = 5_000;
+        let Some(mut matcher) = crate::fuzzy::FuzzyQuery::new(&q.text) else { return Ok(Vec::new()) };
+        let filters_only = Query { text: String::new(), ..q.clone() };
+        let mut scored: Vec<(u32, Item)> = Vec::new();
+        for item in self.search(&filters_only, CANDIDATES, 0)? {
+            if exclude.contains(&item.id) || item.sensitive {
+                continue;
+            }
+            let haystack = [
+                item.title.as_deref().unwrap_or(""),
+                item.meta.url_name.as_deref().unwrap_or(""),
+                item.app_name.as_deref().unwrap_or(""),
+                &item.text,
+            ]
+            .join(" ");
+            if let Some(score) = matcher.score(&haystack) {
+                scored.push((score, item));
+            }
+        }
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.timestamp.cmp(&a.1.timestamp)));
+        Ok(scored.into_iter().take(limit).map(|(_, i)| i).collect())
+    }
+
+    /// Builds the exact-search SQL. `None` when a named pinboard does not exist.
+    fn search_sql(
+        &self,
+        q: &Query,
+        columns: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Option<(String, Vec<Value>)>> {
         let mut clauses: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
 
@@ -487,7 +558,7 @@ impl Store {
             (Some(id), _) => Some(id),
             (None, Some(name)) => match self.pinboard_by_name(name)? {
                 Some(id) => Some(id),
-                None => return Ok(Vec::new()),
+                None => return Ok(None),
             },
             _ => None,
         };
@@ -550,16 +621,14 @@ impl Store {
             }
             None => "i.timestamp DESC",
         };
-        args.push((limit as i64).into());
+        args.push((limit.min(i64::MAX as usize) as i64).into());
         args.push((offset as i64).into());
         let sql = format!(
-            "SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN apps a ON a.id = i.app_id
+            "SELECT {columns} FROM items i LEFT JOIN apps a ON a.id = i.app_id
              WHERE {} ORDER BY {order} LIMIT ? OFFSET ?",
             clauses.join(" AND ")
         );
-        let mut stmt = self.conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params_from_iter(args), item_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        Ok(Some((sql, args)))
     }
 
     pub fn delete(&self, id: i64) -> Result<bool> {
@@ -1359,6 +1428,30 @@ pub mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn fuzzy_fills_in_after_exact_results() {
+        let (_d, mut s) = temp_store();
+        s.insert(&text_item("Quarterly roadmap review", 1), true).unwrap();
+        s.insert(&text_item("https://github.com/rust-lang/rust", 2), true).unwrap();
+        s.insert(&text_item("roadmap draft", 3), true).unwrap();
+        let q = Query::parse("roadmap");
+        let (items, more, fuzzy) = s.search_with_fuzzy(&q, 10, 0, true).unwrap();
+        assert_eq!((items.len(), more, fuzzy), (2, false, 0), "exact matches only, nothing fuzzy to add");
+        let (items, _, fuzzy) = s.search_with_fuzzy(&Query::parse("quartely"), 10, 0, true).unwrap();
+        assert_eq!((items.len(), fuzzy), (1, 1));
+        assert_eq!(items[0].text, "Quarterly roadmap review");
+        let (items, _, fuzzy) = s.search_with_fuzzy(&Query::parse("gthb"), 10, 0, true).unwrap();
+        assert_eq!((items.len(), fuzzy), (1, 1));
+        let (items, _, _) = s.search_with_fuzzy(&Query::parse("gthb"), 10, 0, false).unwrap();
+        assert!(items.is_empty(), "fuzzy can be turned off");
+        // Filters still apply to fuzzy matches.
+        let (items, _, _) = s.search_with_fuzzy(&Query::parse("type:link quartely"), 10, 0, true).unwrap();
+        assert!(items.is_empty());
+        // Exact first, then close matches, without duplicates.
+        let (items, _, fuzzy) = s.search_with_fuzzy(&Query::parse("roadmp"), 10, 0, true).unwrap();
+        assert_eq!((items.len(), fuzzy), (2, 2));
     }
 
     #[test]

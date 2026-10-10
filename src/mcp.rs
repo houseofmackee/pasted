@@ -165,12 +165,13 @@ fn tool_text(text: String, structured: Option<Value>, is_error: bool) -> Value {
 struct Access {
     rules: McpSettings,
     kinds: Vec<ItemKind>,
+    fuzzy: bool,
 }
 
 impl Access {
-    fn new(rules: McpSettings) -> Access {
+    fn new(rules: McpSettings, fuzzy: bool) -> Access {
         let kinds = rules.kinds.iter().filter_map(|k| ItemKind::parse(k)).collect();
-        Access { rules, kinds }
+        Access { rules, kinds, fuzzy }
     }
 
     fn board_allowed(&self, name: &str) -> bool {
@@ -247,6 +248,16 @@ fn list_items(store: &Store, access: &Access, query: &Query, limit: usize) -> Re
     let mut seen = std::collections::HashSet::new();
     found.retain(|i| seen.insert(i.id));
     found.truncate(limit);
+    // Close (fuzzy) matches after exact ones, under the same access rules.
+    if found.len() < limit && access.fuzzy && !query.text.trim().is_empty() {
+        for q in sources(store, access, query)? {
+            for item in store.fuzzy_search(&q, &seen, limit)? {
+                if found.len() < limit && access.allows(store, &item)? && seen.insert(item.id) {
+                    found.push(item);
+                }
+            }
+        }
+    }
     let items = found.iter().map(|i| summarize(store, i)).collect::<Result<Vec<_>>>()?;
     Ok(json!({ "items": items }))
 }
@@ -440,7 +451,9 @@ pub fn handle(session: &mut Session, message: &str, open: &dyn Fn() -> Result<(S
                 Ok((_, settings)) if !settings.mcp.enabled => {
                     Err("AI access to Pasted is turned off. The user can turn it on in Pasted Settings > AI.".into())
                 }
-                Ok((store, settings)) => call_tool(&store, &Access::new(settings.mcp), name, &args),
+                Ok((store, settings)) => {
+                    call_tool(&store, &Access::new(settings.mcp, settings.general.fuzzy_search), name, &args)
+                }
             };
             let (value, outcome) = match result {
                 Ok(v) => (v, "ok".to_string()),

@@ -557,6 +557,7 @@ impl App {
         LINK_PREVIEWS_ENABLED.store(self.settings.general.link_previews, std::sync::atomic::Ordering::Relaxed);
         self.filter = PrivacyFilter::new(&self.settings.privacy);
         self.shelf.set_visible_in_screen_sharing(self.settings.privacy.visible_during_screen_sharing);
+        self.shelf.fuzzy = self.settings.general.fuzzy_search;
         let s = &self.settings.shortcuts;
         let failed =
             self.hotkeys.set(&[(HotkeyAction::OpenShelf, s.open_shelf), (HotkeyAction::PasteStack, s.paste_stack)]);

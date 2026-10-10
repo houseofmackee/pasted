@@ -8,7 +8,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 
 - Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V)
 - Text, rich text, links, images, files, colors and code, each with its own card; rich text keeps its formatting (from RTF, or HTML through a built-in converter that never loads remote content)
-- Instant search with filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
+- Instant search, with close matches for typos and abbreviations ("quartely", "gthb") after exact ones, and filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
 - Paste As (⌥Return or right-click): case changes, trimming, single line, tracking-free links, pretty or minified JSON, sorted or unique lines, URL encoding, and Markdown as formatted text; only options that change the text are shown
@@ -95,7 +95,7 @@ Cards show when an item will expire. `pasted rules` lists rules and flags invali
 
 ```sh
 pasted list -n 20                 # recent history
-pasted search type:link github    # same syntax as the shelf
+pasted search type:link github    # same syntax as the shelf; --exact skips close matches
 pasted show 42                    # print an item's text
 pasted copy 42 [--plain]          # put an item back on the clipboard
 pasted copy 42 --as snake         # copy with a cleanup applied
@@ -197,6 +197,7 @@ paste_directly = true
 sounds = false
 launch_at_login = false
 link_previews = true
+fuzzy_search = true             # close matches after exact ones
 
 [shortcuts]
 open_shelf = "shift+cmd+v"

@@ -53,6 +53,8 @@ pub struct General {
     pub launch_at_login: bool,
     /// Fetch page titles and images for copied links (the only network access).
     pub link_previews: bool,
+    /// After exact matches, also show close matches (typos, abbreviations).
+    pub fuzzy_search: bool,
 }
 
 impl Default for General {
@@ -65,6 +67,7 @@ impl Default for General {
             sounds: false,
             launch_at_login: false,
             link_previews: true,
+            fuzzy_search: true,
         }
     }
 }

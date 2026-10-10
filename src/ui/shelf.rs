@@ -83,6 +83,10 @@ pub struct Shelf {
     pub board: Option<i64>,
     pub boards: Vec<Pinboard>,
     more_available: bool,
+    /// Whether close (fuzzy) matches follow exact ones; set from settings.
+    pub fuzzy: bool,
+    /// Index of the first close match in `items`, if any.
+    close_from: usize,
     query: Query,
     icons: IconCache,
     images: HashMap<i64, Retained<NSImage>>,
@@ -169,6 +173,8 @@ impl Shelf {
             board: None,
             boards: Vec::new(),
             more_available: false,
+            fuzzy: true,
+            close_from: usize::MAX,
             query: Query::default(),
             icons: IconCache::default(),
             images: HashMap::new(),
@@ -321,11 +327,13 @@ impl Shelf {
     }
 
     pub fn reload(&mut self, store: &Store) {
-        self.items = store.search(&self.query, PAGE, 0).unwrap_or_else(|e| {
+        let (items, more, close) = store.search_with_fuzzy(&self.query, PAGE, 0, self.fuzzy).unwrap_or_else(|e| {
             tracing::error!("search failed: {e:#}");
-            Vec::new()
+            (Vec::new(), false, 0)
         });
-        self.more_available = self.items.len() == PAGE;
+        self.items = items;
+        self.more_available = more;
+        self.close_from = if close > 0 { self.items.len() - close } else { usize::MAX };
         self.selected = 0;
         for c in self.cards.drain(..) {
             c.removeFromSuperview();
@@ -360,8 +368,15 @@ impl Shelf {
                 _ => None,
             };
             let rich = self.rich_for(&item, store);
-            let content =
-                CardContent { item: &item, index: i, image, link, rich, shortcut_number: (i < 9).then_some(i + 1) };
+            let content = CardContent {
+                item: &item,
+                index: i,
+                image,
+                link,
+                rich,
+                close_match: i >= self.close_from,
+                shortcut_number: (i < 9).then_some(i + 1),
+            };
             let card = card::build(content, &mut self.icons, self.mtm);
             card.setFrame(rect(16.0 + i as f64 * (CARD_W + GAP), y, CARD_W, CARD_H));
             if i == self.selected {
@@ -387,9 +402,14 @@ impl Shelf {
         if !self.more_available {
             return;
         }
-        let more = store.search(&self.query, PAGE, self.items.len()).unwrap_or_default();
-        self.more_available = more.len() == PAGE;
+        let (more, more_available, close) =
+            store.search_with_fuzzy(&self.query, PAGE, self.items.len(), self.fuzzy).unwrap_or_default();
+        self.more_available = more_available;
         self.items.extend(more);
+        if close > 0 {
+            // Close matches always come last.
+            self.close_from = self.items.len() - close;
+        }
         self.resize_doc();
         self.update_count();
     }

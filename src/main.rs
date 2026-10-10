@@ -6,6 +6,7 @@ mod cli;
 mod clipboard;
 mod encryption;
 mod export;
+mod fuzzy;
 mod hotkeys;
 mod import;
 mod link_preview;
