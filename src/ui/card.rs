@@ -5,6 +5,7 @@ use std::cell::Cell;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{AnyThread, DefinedClass, MainThreadOnly, define_class, msg_send};
+use objc2_app_kit::NSAccessibility;
 use objc2_app_kit::{
     NSColor, NSDragOperation, NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent, NSFont,
     NSFontWeightRegular, NSImage, NSImageScaling, NSImageView, NSMenu, NSTextAlignment, NSView,
@@ -81,6 +82,14 @@ impl CardView {
             layer.setMasksToBounds(true);
             layer.setBackgroundColor(Some(&NSColor::textBackgroundColor().CGColor()));
         }
+        // One VoiceOver element per card; the shelf sets its description.
+        this.setAccessibilityElement(true);
+        // SAFETY: reading an AppKit constant.
+        this.setAccessibilityRole(Some(unsafe { objc2_app_kit::NSAccessibilityButtonRole }));
+        this.setAccessibilityHelp(Some(&objc2_foundation::NSString::from_str(
+            "Return pastes, Shift-Return pastes as plain text, Option-Return offers cleanups.",
+        )));
+        this.set_selected(false);
         this
     }
 
@@ -89,10 +98,19 @@ impl CardView {
     }
 
     pub fn set_selected(&self, selected: bool) {
+        let high_contrast = super::a11y::increase_contrast();
         if let Some(layer) = self.layer() {
-            layer.setBorderWidth(if selected { 4.0 } else { 0.0 });
-            layer.setBorderColor(Some(&NSColor::controlAccentColor().CGColor()));
+            let (width, color) = match (selected, high_contrast) {
+                (true, false) => (4.0, NSColor::controlAccentColor()),
+                (true, true) => (6.0, NSColor::controlAccentColor()),
+                // Increase Contrast: every card gets a visible edge.
+                (false, true) => (1.5, NSColor::labelColor()),
+                (false, false) => (0.0, NSColor::controlAccentColor()),
+            };
+            layer.setBorderWidth(width);
+            layer.setBorderColor(Some(&color.CGColor()));
         }
+        self.setAccessibilitySelected(selected);
     }
 
     fn snapshot(&self) -> Option<Retained<NSImage>> {

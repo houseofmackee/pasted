@@ -95,6 +95,12 @@ impl StackPanel {
             effect.addSubview(&more);
         }
         self.panel.setContentView(Some(&effect));
+        self.panel.setAnimationBehavior(super::a11y::animation_behavior());
         self.panel.orderFrontRegardless();
+        let spoken = match items.first() {
+            None => format!("Paste Stack on, {}. Copy items to add them.", order.label()),
+            Some(next) => format!("Paste Stack, {} items. Next: {}", items.len(), next.summary(80)),
+        };
+        super::a11y::announce(&self.panel, &spoken);
     }
 }

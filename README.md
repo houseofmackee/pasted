@@ -35,6 +35,10 @@ open dist/Pasted.app
 
 Pasting directly into other apps needs Accessibility permission (System Settings > Privacy & Security > Accessibility). Grant it to `Pasted.app`; when running through `cargo run`, the permission applies to your terminal instead. Without it, choosing an item still puts it on the clipboard so you can press ⌘V yourself.
 
+On first launch a welcome window shows the shortcut, the permission status (updated live, with a button that opens the right System Settings pane) and, when Paste is installed, the import. Open it again with **Welcome…** in the menu bar menu.
+
+VoiceOver reads each card as one button (type, source app, age, content and position; sensitive items are never read out) and announces search results and selection changes. Pasted also follows the system Reduce Motion and Increase Contrast settings.
+
 `launch_at_login` only works when running `Pasted.app`.
 
 ## Shelf shortcuts
@@ -120,7 +124,7 @@ Use `--json` with `list` and `search` for machine readable output.
 
 ## Importing from Paste
 
-Choose **Import from Paste…** in the menu bar menu, or run `pasted import paste`. On first launch with an empty history, Pasted offers the import automatically.
+Choose **Import from Paste…** in the menu bar menu, or run `pasted import paste`. The welcome window shown on first launch also offers it.
 
 Link previews Paste already stored (titles, images, icons) come along, so those links are not fetched again.
 

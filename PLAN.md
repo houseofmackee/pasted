@@ -70,7 +70,8 @@ src/
     editor.rs          edit text items in place
     pinboards.rs       pinboard tabs, create/rename/color
     settings/          preferences window (General, Shortcuts, Rules, Sync, Import, Advanced)
-    onboarding.rs      permission walkthrough
+    welcome.rs         first-launch walkthrough (shortcut, permission, import)
+    a11y.rs            VoiceOver descriptions, announcements, display preferences
   hotkeys.rs           Carbon hotkey registration, shortcut model
   settings.rs          Settings struct, load/save, change notifications
   import/
@@ -126,7 +127,7 @@ Threading: the main thread owns AppKit. Clipboard capture runs on the main run l
 - **Sensitive item auto-expiry**: items flagged as secrets are kept for N minutes then purged.
 - **Fast fuzzy search** mode in addition to FTS (good for short queries).
 - **Per-device and per-app statistics** screen (most pasted, most copied from).
-- **Accessibility**: full VoiceOver labels on cards, reduced motion support.
+- **Accessibility**: full VoiceOver labels on cards, reduced motion support. (Done.)
 
 ## 5. Phased roadmap
 
@@ -184,12 +185,12 @@ Done:
 - **Fuzzy search**: after exact (FTS/LIKE) results run out, close matches fill the page: fzf-style subsequences within a single token (nucleo-matcher) and 1 to 2 typos per word; filters apply; most recent 5,000 candidates; about 10 ms on 1,432 real items; "≈ Close match" on cards; in the shelf, `pasted search` (`--exact` to skip) and MCP; setting in General.
 - **Per-device statistics**: device filter in the Statistics window (every tile and chart), a Devices panel with item share, top app and last copy, `pasted stats --device` and a per-device summary; window sized to the screen and scrolls only when needed.
 - **Paste Stack order**: oldest first (default) or newest first, fixed per stack; queue logic in a tested module; panel shows the order and is now opaque for readable text.
+- **Accessibility**: welcome window on first launch and from the menu (shortcut, live Accessibility status with a deep link, Paste import; replaces the automatic import prompt), also shown the first time a paste needs permission; cards are single VoiceOver buttons with a spoken description (type, title, app, age, content, expiry, position; sensitive items never read out) and selection, results and panels are announced; labelled search field and tabs; Reduce Motion turns off window animations; Increase Contrast adds card borders.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
 Features
-- Accessibility: Accessibility-permission onboarding window, VoiceOver labels on shelf cards, reduced motion support.
 - Statistics: a table or "copy data" view of the chart values.
 
 Distribution

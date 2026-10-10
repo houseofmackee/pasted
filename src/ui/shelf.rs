@@ -6,10 +6,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, MainThreadOnly, Message, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSBackingStoreType, NSButton, NSColor, NSEvent, NSFont, NSFontAttributeName, NSForegroundColorAttributeName,
-    NSImage, NSMenu, NSMenuItem, NSPanel, NSResponder, NSScreen, NSScrollView, NSSearchField, NSTextField, NSView,
-    NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
+    NSAccessibility, NSBackingStoreType, NSButton, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSImage, NSMenu, NSMenuItem, NSPanel, NSResponder, NSScreen, NSScrollView,
+    NSSearchField, NSTextField, NSView, NSVisualEffectBlendingMode, NSVisualEffectMaterial, NSVisualEffectState,
+    NSVisualEffectView, NSWindowCollectionBehavior, NSWindowSharingType, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSAttributedString, NSMutableAttributedString, NSObjectProtocol, NSRange, NSRect,
@@ -128,6 +128,10 @@ impl Shelf {
 
         let search = NSSearchField::initWithFrame(NSSearchField::alloc(mtm), rect(16.0, 0.0, 260.0, 28.0));
         search.setPlaceholderString(Some(&ns("Search  (type: app: after: board:)")));
+        search.setAccessibilityLabel(Some(&ns("Search clipboard history")));
+        search.setAccessibilityHelp(Some(&ns(
+            "Type to search. Left and right arrows choose an item, Return pastes it, Tab switches pinboards, Escape closes.",
+        )));
         // SAFETY: the target outlives the search field (both live for the whole app).
         unsafe { search.setDelegate(Some(ProtocolObject::from_ref(target))) };
         effect.addSubview(&search);
@@ -224,6 +228,7 @@ impl Shelf {
         self.position();
         self.reload_tabs(store);
         self.reload(store);
+        self.panel.setAnimationBehavior(super::a11y::animation_behavior());
         self.panel.orderFrontRegardless();
         self.panel.makeKeyWindow();
         let responder: &NSResponder = &self.search;
@@ -280,6 +285,15 @@ impl Shelf {
                 // SAFETY: the menu is retained by the button.
                 unsafe { b.setMenu(Some(&menu)) };
             }
+            // The colored dot is decoration; say what the tab is instead.
+            let spoken = match (tag_value, on) {
+                (t, _) if t == tag(TAB_NEW, 0) => "New pinboard".to_string(),
+                (t, sel) if t == tag(TAB_SELECT, -1) => {
+                    format!("Clipboard history{}", if sel { ", selected" } else { "" })
+                }
+                (_, sel) => format!("{title} pinboard{}", if sel { ", selected" } else { "" }),
+            };
+            b.setAccessibilityLabel(Some(&ns(&spoken)));
             b.sizeToFit();
             let width = b.frame().size.width + 24.0;
             b.setFrame(rect(x, 0.0, width, TAB_H));
@@ -344,7 +358,22 @@ impl Shelf {
         self.scroll.reflectScrolledClipView(&clip);
         self.ensure_visible_built(store);
         self.update_count();
-        self.select(0);
+        self.select_quietly(0);
+        // One announcement for the new results instead of one per keystroke-selected card.
+        let summary = match self.items.len() {
+            0 => "No items".to_string(),
+            n => format!("{n} items. {}", self.describe(0)),
+        };
+        super::a11y::announce(&self.panel, &summary);
+    }
+
+    /// VoiceOver description of the item at `index`.
+    fn describe(&self, index: usize) -> String {
+        let total = if self.more_available { self.items.len() + 1 } else { self.items.len() };
+        self.items
+            .get(index)
+            .map(|item| super::a11y::describe_item(item, index, total, index >= self.close_from))
+            .unwrap_or_default()
     }
 
     fn resize_doc(&self) {
@@ -378,6 +407,8 @@ impl Shelf {
                 shortcut_number: (i < 9).then_some(i + 1),
             };
             let card = card::build(content, &mut self.icons, self.mtm);
+            card.setAccessibilityLabel(Some(&ns(&self.describe(i))));
+            super::a11y::hide_children(&card);
             card.setFrame(rect(16.0 + i as f64 * (CARD_W + GAP), y, CARD_W, CARD_H));
             if i == self.selected {
                 card.set_selected(true);
@@ -426,7 +457,15 @@ impl Shelf {
         self.count.setStringValue(&ns(&text));
     }
 
+    /// Selects and announces the item for VoiceOver.
     pub fn select(&mut self, index: usize) {
+        self.select_quietly(index);
+        if !self.items.is_empty() {
+            super::a11y::announce(&self.panel, &self.describe(self.selected));
+        }
+    }
+
+    fn select_quietly(&mut self, index: usize) {
         if self.items.is_empty() {
             return;
         }

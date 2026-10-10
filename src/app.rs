@@ -46,7 +46,7 @@ const OPEN_SHELF: u8 = 10;
 const TOGGLE_PAUSE: u8 = 11;
 const IMPORT_PASTE: u8 = 12;
 const OPEN_SETTINGS: u8 = 13;
-const ACCESSIBILITY: u8 = 15;
+const WELCOME: u8 = 15;
 const ABOUT: u8 = 16;
 const QUIT: u8 = 17;
 const CLEAR_HISTORY: u8 = 18;
@@ -263,6 +263,7 @@ pub struct App {
     pending_snippet: Option<PendingSnippet>,
     settings_window: Option<SettingsWindow>,
     stats_window: Option<crate::ui::stats_window::StatsWindow>,
+    welcome: Option<crate::ui::welcome::Welcome>,
     /// Modification time of settings.toml when last read or written, to
     /// notice hand edits.
     settings_mtime: Option<std::time::SystemTime>,
@@ -395,6 +396,7 @@ pub fn run() -> Result<()> {
         pending_snippet: None,
         settings_window: None,
         stats_window: None,
+        welcome: None,
         settings_mtime: settings_mtime(),
         last_settings_check: Instant::now(),
         rules: crate::rules::Rules::new(&[]).0,
@@ -455,7 +457,7 @@ pub fn run() -> Result<()> {
     }
     crate::ocr::spawn_worker();
     crate::link_preview::spawn_worker(&LINK_PREVIEWS_ENABLED);
-    offer_first_run_import();
+    show_welcome_once();
     tracing::info!("Pasted is running");
     app.run();
     drop(lock);
@@ -610,6 +612,30 @@ impl App {
         }
     }
 
+    fn open_welcome(&mut self) {
+        self.close_shelf();
+        if self.welcome.is_none() {
+            let t: &AnyObject = &self.target;
+            let shortcut = self.settings.shortcuts.open_shelf.display();
+            let paste_found = !paste_app::detect().is_empty();
+            self.welcome = Some(crate::ui::welcome::Welcome::new(t, &shortcut, paste_found, self.mtm));
+        }
+        if let Some(win) = &self.welcome {
+            win.refresh();
+            win.show(self.mtm);
+        }
+    }
+
+    /// Keeps the welcome window's permission status current while it is open.
+    fn refresh_welcome(&mut self) {
+        if let Some(win) = &self.welcome
+            && win.is_visible()
+            && win.refresh()
+        {
+            self.rebuild_status_menu();
+        }
+    }
+
     fn open_stats(&mut self) {
         self.close_shelf();
         if self.stats_window.is_none() {
@@ -706,9 +732,7 @@ impl App {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("Statistics\u{2026}", STATISTICS);
         add("Settings\u{2026}", SETTINGS);
-        if !crate::paste::is_trusted() {
-            add("Grant Accessibility Permission\u{2026}", ACCESSIBILITY);
-        }
+        add("Welcome\u{2026}", WELCOME);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("About Pasted", ABOUT);
         add("Quit Pasted", QUIT);
@@ -965,7 +989,7 @@ impl App {
         if !crate::paste::is_trusted() {
             if !self.asked_accessibility {
                 self.asked_accessibility = true;
-                crate::paste::request_trust();
+                self.open_welcome();
             }
             return;
         }
@@ -1182,6 +1206,7 @@ fn tick() {
         app.maintenance();
         app.check_settings_file();
         app.expire_items();
+        app.refresh_welcome();
         (app.poll_import(), app.poll_file_job(), app.poll_switch())
     });
     let Some((import, file_job, switch)) = finished else { return };
@@ -1809,8 +1834,15 @@ fn dispatch(raw_tag: isize) {
             }
         }
 
-        ACCESSIBILITY => {
-            crate::paste::request_trust();
+        WELCOME => {
+            with(|app| app.open_welcome());
+        }
+        crate::ui::welcome::WELCOME_DONE => {
+            with(|app| {
+                if let Some(win) = &app.welcome {
+                    win.close();
+                }
+            });
         }
         ABOUT => about(),
         QUIT => NSApplication::sharedApplication(mtm()).terminate(None),
@@ -2134,14 +2166,13 @@ fn import_from_paste() {
     });
 }
 
-/// On first launch with an empty history, offer to bring over Paste's data.
-fn offer_first_run_import() {
-    let empty = with(|app| app.store.stats().map(|s| s.items == 0).unwrap_or(false)).unwrap_or(false);
-    let marker = crate::paths::data_dir().map(|d| d.join(".import-offered"));
-    let Ok(marker) = marker else { return };
-    if !empty || marker.exists() || paste_app::detect().is_empty() {
+/// Shows the welcome window once, on first launch. It covers the shortcut,
+/// Accessibility permission and, when Paste is installed, importing from it.
+fn show_welcome_once() {
+    let Ok(marker) = crate::paths::data_dir().map(|d| d.join(".welcomed")) else { return };
+    if marker.exists() {
         return;
     }
     let _ = std::fs::write(&marker, b"");
-    import_from_paste();
+    with(|app| app.open_welcome());
 }

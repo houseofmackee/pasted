@@ -161,6 +161,13 @@ impl Preview {
         }
         self.panel.setContentView(Some(&effect));
         self.item_id = Some(item.id);
+        self.panel.setAnimationBehavior(super::a11y::animation_behavior());
         self.panel.orderFrontRegardless();
+        let spoken = if item.sensitive {
+            "Preview of sensitive item. The text is shown on screen.".to_string()
+        } else {
+            format!("Preview. {}", crate::model::truncate_chars(&item.text, 400))
+        };
+        super::a11y::announce(&self.panel, &spoken);
     }
 }
