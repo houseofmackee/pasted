@@ -75,6 +75,8 @@ Choose **Import from Paste…** in the menu bar menu, or run `pasted import past
 
 Link previews Paste already stored (titles, images, icons) come along, so those links are not fetched again.
 
+Imports copy history as it is by default. To leave sensitive items behind, choose what to skip in Settings > Data (or the `[import]` section of the settings file): items from ignored apps, API keys and tokens, text matching your ignore patterns, and short snippets that mention a password. Each check is optional and off by default; already imported items are never removed.
+
 The importer copies Paste's database to a temporary directory and reads the copy, so Paste's own files are never modified. Running it again only adds items that are new since the last import. History retention and shortcuts are taken from Paste's settings. Quit Paste first for the most complete import.
 
 ## Settings
@@ -111,6 +113,11 @@ excluded_apps = ["com.1password.1password", "..."]
 ignore_patterns = []
 visible_during_screen_sharing = false
 
+[import]                        # optional privacy checks for imports, all off by default
+skip_excluded_apps = false
+skip_secrets = false
+skip_ignore_patterns = false
+skip_password_mentions = false
 ```
 
 Set `PASTED_HOME` to use a different data directory (useful for testing). `PASTED_LOG=pasted=debug` enables verbose logging.

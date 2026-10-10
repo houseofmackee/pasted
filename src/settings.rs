@@ -128,12 +128,34 @@ impl Default for Privacy {
     }
 }
 
+/// Optional privacy checks applied to items brought in by an import. Each is
+/// off by default, so an import copies history as it is unless asked.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ImportFilter {
+    /// Skip items copied from apps in `privacy.excluded_apps`.
+    pub skip_excluded_apps: bool,
+    /// Skip text that looks like an API key, token, private key or card number.
+    pub skip_secrets: bool,
+    /// Skip text matching `privacy.ignore_patterns`.
+    pub skip_ignore_patterns: bool,
+    /// Skip short text that mentions a password.
+    pub skip_password_mentions: bool,
+}
+
+impl ImportFilter {
+    pub fn any(&self) -> bool {
+        self.skip_excluded_apps || self.skip_secrets || self.skip_ignore_patterns || self.skip_password_mentions
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub general: General,
     pub shortcuts: Shortcuts,
     pub privacy: Privacy,
+    pub import: ImportFilter,
 }
 
 impl Settings {

@@ -1465,6 +1465,12 @@ fn import_from_paste() {
     if running {
         message.push_str("\n\nPaste is running. Quitting it first gives the most complete import.");
     }
+    let filtering = with(|app| app.settings.import.any()).unwrap_or(false);
+    message.push_str(if filtering {
+        "\n\nThe import privacy filter is on (Settings > Data): matching items are skipped."
+    } else {
+        "\n\nEverything is imported as is. To skip sensitive items, choose what to skip in Settings > Data."
+    });
     if !run_modal(|mtm| dialogs::confirm("Import from Paste?", &message, "Import", mtm)) {
         return;
     }

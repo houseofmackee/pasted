@@ -267,6 +267,10 @@ pub struct SettingsWindow {
     patterns_status: Retained<NSTextField>,
     stats: Retained<NSTextField>,
     paste_status: Retained<NSTextField>,
+    skip_excluded_apps: Retained<NSButton>,
+    skip_secrets: Retained<NSButton>,
+    skip_ignore_patterns: Retained<NSButton>,
+    skip_password_mentions: Retained<NSButton>,
 }
 
 /// Lays out rows top to bottom inside one tab.
@@ -546,9 +550,27 @@ impl SettingsWindow {
         let y = f.row("", 30.0);
         import.setFrame(rect(CONTROL_X - 6.0, y, import.frame().size.width, 30.0));
         f.add(&import);
+        let mut import_filters = Vec::new();
+        for (i, title) in [
+            "Items from apps on the Privacy ignore list",
+            "API keys, tokens, private keys and card numbers",
+            "Text matching your ignore patterns",
+            "Short snippets that mention a password",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let b = checkbox(title, target, mtm);
+            let y = f.row(if i == 0 { "When importing, skip:" } else { "" }, 20.0);
+            b.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 50.0, 20.0));
+            f.add(&b);
+            import_filters.push(b);
+        }
+        let [skip_excluded_apps, skip_secrets, skip_ignore_patterns, skip_password_mentions]: [Retained<NSButton>; 4] =
+            import_filters.try_into().unwrap_or_else(|_| unreachable!());
         f.note(
             "Importing reads a copy of Paste's database, so Paste is never modified. Running it again only adds \
-             new items.",
+             new items. Skipped items are not imported; nothing already imported is removed.",
             CONTROL_X,
         );
         let folder = button("Open Data Folder", tag(OPEN_DATA_FOLDER, 0), target, mtm);
@@ -592,6 +614,10 @@ impl SettingsWindow {
             patterns_status,
             stats,
             paste_status,
+            skip_excluded_apps,
+            skip_secrets,
+            skip_ignore_patterns,
+            skip_password_mentions,
         }
     }
 
@@ -629,6 +655,11 @@ impl SettingsWindow {
         set_checked(&self.ignore_concealed, p.ignore_concealed);
         set_checked(&self.ignore_secrets, p.ignore_secrets);
         set_checked(&self.visible_sharing, p.visible_during_screen_sharing);
+        let im = &s.import;
+        set_checked(&self.skip_excluded_apps, im.skip_excluded_apps);
+        set_checked(&self.skip_secrets, im.skip_secrets);
+        set_checked(&self.skip_ignore_patterns, im.skip_ignore_patterns);
+        set_checked(&self.skip_password_mentions, im.skip_password_mentions);
         *self.apps.ivars().borrow_mut() = p.excluded_apps.iter().map(|id| (app_name(id), id.clone())).collect();
         self.apps_table.reloadData();
         self.patterns.setString(&ns(&p.ignore_patterns.join("\n")));
@@ -664,6 +695,11 @@ impl SettingsWindow {
         p.ignore_concealed = checked(&self.ignore_concealed);
         p.ignore_secrets = checked(&self.ignore_secrets);
         p.visible_during_screen_sharing = checked(&self.visible_sharing);
+        let im = &mut s.import;
+        im.skip_excluded_apps = checked(&self.skip_excluded_apps);
+        im.skip_secrets = checked(&self.skip_secrets);
+        im.skip_ignore_patterns = checked(&self.skip_ignore_patterns);
+        im.skip_password_mentions = checked(&self.skip_password_mentions);
     }
 
     /// Validated patterns from the text view, or the first error.

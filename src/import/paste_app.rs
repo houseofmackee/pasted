@@ -89,6 +89,8 @@ pub struct ImportReport {
     /// Imported history items older than the retention setting; they will be
     /// removed by the next cleanup unless retention is raised.
     pub items_beyond_retention: usize,
+    /// Items skipped by the optional import privacy filter.
+    pub items_filtered: usize,
     pub retention: Option<Retention>,
     pub errors: Vec<String>,
 }
@@ -106,6 +108,7 @@ impl ImportReport {
             format!("Imported: {}", self.items_imported),
             format!("Already imported: {}", self.items_already_present),
             format!("Failed: {}", self.items_failed),
+            format!("Skipped by privacy filter: {}", self.items_filtered),
             format!("Pinboards created: {}", self.pinboards_created),
             format!("OCR texts imported: {}", self.ocr_imported),
             format!("Link previews imported: {}", self.previews_imported),
@@ -125,6 +128,40 @@ impl ImportReport {
             lines.push(format!("  error: {e}"));
         }
         lines.join("\n")
+    }
+}
+
+/// Rules applied to each imported item.
+struct ImportPolicy {
+    /// History older than this (Unix ms) will be pruned by retention.
+    retention_cutoff: Option<i64>,
+    privacy: ImportPrivacy,
+}
+
+/// The optional privacy checks from `settings.import`, ready to apply.
+struct ImportPrivacy {
+    settings: crate::settings::ImportFilter,
+    excluded_apps: Vec<String>,
+    patterns: Vec<regex::Regex>,
+}
+
+impl ImportPrivacy {
+    fn new(settings: &Settings) -> ImportPrivacy {
+        ImportPrivacy {
+            settings: settings.import.clone(),
+            excluded_apps: settings.privacy.excluded_apps.clone(),
+            patterns: settings.privacy.ignore_patterns.iter().filter_map(|p| regex::Regex::new(p).ok()).collect(),
+        }
+    }
+
+    fn skips(&self, text: &str, bundle_id: Option<&str>) -> bool {
+        use crate::clipboard::privacy::{looks_secret, mentions_password};
+        let s = &self.settings;
+        (s.skip_excluded_apps
+            && bundle_id.is_some_and(|b| self.excluded_apps.iter().any(|a| a.eq_ignore_ascii_case(b))))
+            || (s.skip_secrets && looks_secret(text))
+            || (s.skip_ignore_patterns && self.patterns.iter().any(|p| p.is_match(text)))
+            || (s.skip_password_mentions && mentions_password(text))
     }
 }
 
@@ -231,10 +268,11 @@ pub fn import(
         let external_dir = install.data_dir.join(".db_SUPPORT/_EXTERNAL_DATA");
         let run = if opts.dry_run { None } else { Some(store.begin_import(&install.bundle_id)?) };
         let cutoff = settings.general.history_retention.max_age_ms().map(|age| crate::model::now_ms() - age);
+        let policy = ImportPolicy { retention_cutoff: cutoff, privacy: ImportPrivacy::new(settings) };
         let result = if opts.dry_run {
-            import_items(&db, &lists, &external_dir, store, opts, cutoff, &mut report)
+            import_items(&db, &lists, &external_dir, store, opts, &policy, &mut report)
         } else {
-            store.batch(|store| import_items(&db, &lists, &external_dir, store, opts, cutoff, &mut report))
+            store.batch(|store| import_items(&db, &lists, &external_dir, store, opts, &policy, &mut report))
         };
         report.retention = Some(settings.general.history_retention);
         result?;
@@ -254,7 +292,7 @@ fn import_items(
     external_dir: &Path,
     store: &mut Store,
     opts: &ImportOptions,
-    cutoff: Option<i64>,
+    policy: &ImportPolicy,
     report: &mut ImportReport,
 ) -> Result<()> {
     // Pinboards first, in Paste's order.
@@ -331,9 +369,17 @@ fn import_items(
                 continue;
             }
         };
+        let (kind, text, meta) = match classify(&reps) {
+            Some(c) => (c.kind, c.text, c.meta),
+            None => (kind_from_raw_type(raw_type.unwrap_or(5)), title.clone().unwrap_or_default(), ItemMeta::default()),
+        };
+        if policy.privacy.skips(&text, bundle_id.as_deref()) {
+            report.items_filtered += 1;
+            continue;
+        }
         let in_history = list_pk.and_then(|pk| boards.get(&pk)).is_none()
             && !list_pk.and_then(|pk| lists.get(&pk)).is_some_and(|l| l.is_pinboard);
-        if in_history && cutoff.is_some_and(|c| timestamp.or(created).unwrap_or(i64::MAX) < c) {
+        if in_history && policy.retention_cutoff.is_some_and(|c| timestamp.or(created).unwrap_or(i64::MAX) < c) {
             report.items_beyond_retention += 1;
         }
         if opts.dry_run {
@@ -341,10 +387,6 @@ fn import_items(
             continue;
         }
 
-        let (kind, text, meta) = match classify(&reps) {
-            Some(c) => (c.kind, c.text, c.meta),
-            None => (kind_from_raw_type(raw_type.unwrap_or(5)), title.clone().unwrap_or_default(), ItemMeta::default()),
-        };
         let title = title.filter(|t| !t.trim().is_empty() && t.trim() != text.trim());
         let board = list_pk.and_then(|pk| boards.get(&pk).copied());
         let timestamp = timestamp.or(created).unwrap_or_else(crate::model::now_ms);
@@ -535,10 +577,12 @@ mod tests {
             v.extend(enc.finish().unwrap());
             v
         };
-        let items: [(i64, &str, Option<i64>, &str, f64); 3] = [
+        let items: [(i64, &str, Option<i64>, &str, f64); 5] = [
             (1, "item-1", Some(1), "first clip", 700_000_000.0),
             (2, "item-2", Some(1), "https://example.com", 700_000_100.0),
             (3, "item-3", Some(2), "pinned snippet", 700_000_200.0),
+            (5, "item-5", Some(1), "key AKIAIOSFODNN7EXAMPLE", 700_000_400.0),
+            (6, "item-6", Some(1), "staging login admin / Password1", 700_000_500.0),
         ];
         for (pk, ident, list, text, ts) in items {
             db.execute(
@@ -578,8 +622,9 @@ mod tests {
         let opts = ImportOptions { dry_run: false, history: true, settings: true };
 
         let report = import(&install, &mut store, &mut settings, &opts).unwrap();
-        assert_eq!(report.items_found, 4);
-        assert_eq!(report.items_imported, 3);
+        assert_eq!(report.items_found, 6);
+        assert_eq!(report.items_imported, 5);
+        assert_eq!(report.items_filtered, 0);
         assert_eq!(report.items_failed, 1);
         assert_eq!(report.pinboards_created, 1);
         assert_eq!(report.ocr_imported, 1);
@@ -587,15 +632,15 @@ mod tests {
         assert_eq!(store.search(&Query::text("domain page"), 10, 0).unwrap().len(), 1);
         assert_eq!(settings.general.history_retention, Retention::Year);
         // Fixture timestamps are from 2023, older than a year.
-        assert_eq!(report.items_beyond_retention, 2);
+        assert_eq!(report.items_beyond_retention, 4);
 
         let history = store.search(&Query::default(), 10, 0).unwrap();
-        assert_eq!(history.len(), 2);
-        assert_eq!(history[0].kind, ItemKind::Link);
-        assert_eq!(history[1].app_name.as_deref(), Some("Editor"));
-        assert_eq!(history[1].device.as_deref(), Some("Test Mac"));
+        assert_eq!(history.len(), 4);
+        assert_eq!(history[2].kind, ItemKind::Link);
+        assert_eq!(history[3].app_name.as_deref(), Some("Editor"));
+        assert_eq!(history[3].device.as_deref(), Some("Test Mac"));
         // 700000000 seconds after 2001-01-01 is 2023-03-08.
-        assert_eq!(history[1].timestamp, (700_000_000.0 + CORE_DATA_EPOCH) as i64 * 1000);
+        assert_eq!(history[3].timestamp, (700_000_000.0 + CORE_DATA_EPOCH) as i64 * 1000);
         assert_eq!(store.search(&Query::text("receipt"), 10, 0).unwrap().len(), 1);
         let boards = store.pinboards().unwrap();
         assert_eq!(boards[0].name, "Snippets");
@@ -604,8 +649,38 @@ mod tests {
 
         let again = import(&install, &mut store, &mut settings, &opts).unwrap();
         assert_eq!(again.items_imported, 0);
-        assert_eq!(again.items_already_present, 3);
+        assert_eq!(again.items_already_present, 5);
         assert_eq!(again.pinboards_created, 0);
+    }
+
+    #[test]
+    fn optional_privacy_filter_is_selective() {
+        let src = tempfile::tempdir().unwrap();
+        fixture(src.path());
+        let install = PasteInstall { bundle_id: "com.wiheads.paste".into(), data_dir: src.path().into(), prefs: None };
+        let opts = ImportOptions { dry_run: false, history: true, settings: false };
+
+        // Only the secrets check: the AWS key is skipped, the password mention is kept.
+        let (_d, mut store) = crate::store::tests::temp_store();
+        let mut settings = Settings::default();
+        settings.import.skip_secrets = true;
+        let report = import(&install, &mut store, &mut settings, &opts).unwrap();
+        assert_eq!((report.items_imported, report.items_filtered), (4, 1));
+        assert!(store.search(&Query::text("AKIA"), 10, 0).unwrap().is_empty());
+        assert_eq!(store.search(&Query::text("Password1"), 10, 0).unwrap().len(), 1);
+
+        // Both checks, plus excluded apps (the fixture's app is excluded here).
+        let (_d, mut store) = crate::store::tests::temp_store();
+        let mut settings = Settings::default();
+        settings.import.skip_secrets = true;
+        settings.import.skip_password_mentions = true;
+        let report = import(&install, &mut store, &mut settings, &opts).unwrap();
+        assert_eq!((report.items_imported, report.items_filtered), (3, 2));
+        settings.import.skip_excluded_apps = true;
+        settings.privacy.excluded_apps.push("com.example.editor".into());
+        let (_d, mut store) = crate::store::tests::temp_store();
+        let report = import(&install, &mut store, &mut settings, &opts).unwrap();
+        assert_eq!((report.items_imported, report.items_filtered), (0, 5));
     }
 
     #[test]
@@ -617,7 +692,7 @@ mod tests {
         let mut settings = Settings::default();
         let opts = ImportOptions { dry_run: true, history: true, settings: false };
         let report = import(&install, &mut store, &mut settings, &opts).unwrap();
-        assert_eq!(report.items_imported, 3);
+        assert_eq!(report.items_imported, 5);
         assert_eq!(store.stats().unwrap().items, 0);
         assert!(store.pinboards().unwrap().is_empty());
     }

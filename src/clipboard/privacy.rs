@@ -88,6 +88,15 @@ impl PrivacyFilter {
     }
 }
 
+static PASSWORD_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\b(?:passwords?|passwd|pwd|passcode|passphrase)[0-9!@#$%^&*]*\b").unwrap());
+
+/// Short snippets that mention a password, such as "user / Password1" or
+/// "pwd: hunter2". Deliberately broad, so it is only used where the user opts in.
+pub fn mentions_password(text: &str) -> bool {
+    text.chars().count() <= 300 && PASSWORD_WORD.is_match(text)
+}
+
 pub fn looks_secret(text: &str) -> bool {
     if text.len() > 100_000 {
         return false;
@@ -143,6 +152,16 @@ mod tests {
         assert!(!looks_secret("4111 1111 1111 1112"));
         assert!(!looks_secret("hello world"));
         assert!(!looks_secret("call me at 555 123 4567"));
+    }
+
+    #[test]
+    fn password_mentions() {
+        assert!(mentions_password("staging: admin / Password1"));
+        assert!(mentions_password("pwd: hunter2"));
+        assert!(mentions_password("The PASSWORD is in the vault"));
+        assert!(!mentions_password("passport photo"));
+        assert!(!mentions_password("bypass the cache"));
+        assert!(!mentions_password(&format!("password {}", "x".repeat(400))));
     }
 
     #[test]
