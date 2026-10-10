@@ -124,6 +124,8 @@ pub struct CardContent<'a> {
     pub index: usize,
     pub image: Option<Retained<NSImage>>,
     pub link: Option<LinkPreview>,
+    /// Styled text for rich text items.
+    pub rich: Option<Retained<objc2_foundation::NSAttributedString>>,
     pub shortcut_number: Option<usize>,
 }
 
@@ -295,6 +297,9 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
             };
             let text = truncate_chars(&item.text, 700);
             let l = wrapping_label(&text, &font, 11, mtm);
+            if let Some(rich) = &content.rich {
+                l.setAttributedStringValue(rich);
+            }
             l.setFrame(body);
             card.addSubview(&l);
         }

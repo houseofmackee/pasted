@@ -12,6 +12,7 @@ mod model;
 mod ocr;
 mod paste;
 mod paths;
+mod rich;
 mod search;
 mod settings;
 mod shortcut;

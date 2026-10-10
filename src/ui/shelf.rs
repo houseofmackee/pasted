@@ -86,6 +86,7 @@ pub struct Shelf {
     query: Query,
     icons: IconCache,
     images: HashMap<i64, Retained<NSImage>>,
+    rich: HashMap<i64, Retained<NSAttributedString>>,
     target: Retained<crate::app::Target>,
 }
 
@@ -171,6 +172,7 @@ impl Shelf {
             query: Query::default(),
             icons: IconCache::default(),
             images: HashMap::new(),
+            rich: HashMap::new(),
             target: target.retain(),
         }
     }
@@ -357,7 +359,9 @@ impl Shelf {
                 (ItemKind::Link, Some(url)) => store.link_preview(url).ok().flatten(),
                 _ => None,
             };
-            let content = CardContent { item: &item, index: i, image, link, shortcut_number: (i < 9).then_some(i + 1) };
+            let rich = self.rich_for(&item, store);
+            let content =
+                CardContent { item: &item, index: i, image, link, rich, shortcut_number: (i < 9).then_some(i + 1) };
             let card = card::build(content, &mut self.icons, self.mtm);
             card.setFrame(rect(16.0 + i as f64 * (CARD_W + GAP), y, CARD_W, CARD_H));
             if i == self.selected {
@@ -438,6 +442,22 @@ impl Shelf {
 
     pub fn forget_image(&mut self, id: i64) {
         self.images.remove(&id);
+        self.rich.remove(&id);
+    }
+
+    fn rich_for(&mut self, item: &Item, store: &Store) -> Option<Retained<NSAttributedString>> {
+        if item.kind != ItemKind::RichText {
+            return None;
+        }
+        if let Some(r) = self.rich.get(&item.id) {
+            return Some(r.clone());
+        }
+        let r = super::rich_text::render(store, item, super::rich_text::Target::Card, self.mtm)?;
+        if self.rich.len() > 400 {
+            self.rich.clear();
+        }
+        self.rich.insert(item.id, r.clone());
+        Some(r)
     }
 }
 

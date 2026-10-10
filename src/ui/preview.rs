@@ -4,8 +4,7 @@ use objc2::rc::Retained;
 use objc2::{MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBackingStoreType, NSColor, NSFont, NSFontWeightRegular, NSImage, NSImageScaling, NSImageView, NSPanel,
-    NSScrollView, NSTextView, NSView, NSVisualEffectMaterial, NSVisualEffectState, NSVisualEffectView,
-    NSWindowStyleMask,
+    NSScrollView, NSTextView, NSView, NSWindowStyleMask,
 };
 use objc2_foundation::{MainThreadMarker, NSObjectProtocol, NSRect};
 
@@ -105,6 +104,7 @@ impl Preview {
         item: &Item,
         image: Option<Retained<NSImage>>,
         link: Option<LinkPreview>,
+        rich: Option<Retained<objc2_foundation::NSAttributedString>>,
         shelf_frame: NSRect,
         mtm: MainThreadMarker,
     ) {
@@ -113,13 +113,15 @@ impl Preview {
         let y = shelf_frame.origin.y + shelf_frame.size.height + 12.0;
         self.panel.setFrame_display(rect(x, y, w, h), true);
 
-        let effect = NSVisualEffectView::initWithFrame(NSVisualEffectView::alloc(mtm), rect(0.0, 0.0, w, h));
-        effect.setMaterial(NSVisualEffectMaterial::Popover);
-        effect.setState(NSVisualEffectState::Active);
+        // Opaque, like the cards: text contrast must not depend on what is behind the panel.
+        let effect = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, w, h));
         effect.setWantsLayer(true);
         if let Some(layer) = effect.layer() {
+            layer.setBackgroundColor(Some(&NSColor::textBackgroundColor().CGColor()));
             layer.setCornerRadius(14.0);
             layer.setMasksToBounds(true);
+            layer.setBorderWidth(1.0);
+            layer.setBorderColor(Some(&NSColor::separatorColor().CGColor()));
         }
         let inner = rect(16.0, 16.0, w - 32.0, h - 32.0);
         match (item.kind, image) {
@@ -149,6 +151,10 @@ impl Preview {
                 };
                 tv.setFont(Some(&font));
                 tv.setString(&ns(&item.text));
+                // SAFETY: the text view owns its text storage for its whole lifetime.
+                if let (Some(rich), Some(storage)) = (&rich, unsafe { tv.textStorage() }) {
+                    storage.setAttributedString(rich);
+                }
                 scroll.setDocumentView(Some(&tv));
                 effect.addSubview(&scroll);
             }

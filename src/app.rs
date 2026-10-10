@@ -787,7 +787,8 @@ impl App {
             (ItemKind::Link, Some(url)) => self.store.link_preview(url).ok().flatten(),
             _ => None,
         };
-        self.preview.show(&item, image, link, self.shelf.panel.frame(), self.mtm);
+        let rich = crate::ui::rich_text::render(&self.store, &item, crate::ui::rich_text::Target::Preview, self.mtm);
+        self.preview.show(&item, image, link, rich, self.shelf.panel.frame(), self.mtm);
     }
 
     fn open_item(&mut self, id: i64) {

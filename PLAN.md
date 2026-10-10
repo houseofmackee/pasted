@@ -171,11 +171,11 @@ Done:
 - **Phase 4 (partial)**: pinboards (create, rename, recolor, delete, pin/unpin), Paste Stack, Vision OCR worker, search filters.
 - **Phase 4 Settings window**: General, Shortcuts (recorder fields), Privacy (excluded apps list, validated ignore patterns), Data (stats, import, clear history). Changes apply immediately; hand edits to settings.toml are picked up automatically.
 - **Link previews**: background fetcher (public http(s) only, private and local hosts rejected at every redirect, size and time limits, opt-out setting), previews imported from Paste, shown on cards and in the preview panel, and indexed for search.
+- **Rich text rendering**: RTF through AppKit, HTML through a small built-in converter (no WebKit, no remote content); fonts scaled to the card, background highlights dropped, low-contrast source colors replaced. Preview panel made opaque for readable text.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
-- Rich text rendering on cards.
 - Phase 5 improvements: rule engine actions (auto-expire, auto-pin), paste transforms, snippet placeholders, encryption at rest, statistics view, MCP server, export.
 - App icon, universal binary, notarization and DMG, Sparkle updates (needs the deferred bundle id and signing team).
 - Paste Stack ordering option (LIFO) and an explicit Accessibility onboarding window.

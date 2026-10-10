@@ -7,7 +7,7 @@ Everything stays on your Mac: no accounts and no telemetry. The only network acc
 ## Features
 
 - Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V)
-- Text, rich text, links, images, files, colors and code, each with its own card
+- Text, rich text, links, images, files, colors and code, each with its own card; rich text keeps its formatting (from RTF, or HTML through a built-in converter that never loads remote content)
 - Instant search with filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
@@ -110,6 +110,7 @@ ignore_secrets = true
 excluded_apps = ["com.1password.1password", "..."]
 ignore_patterns = []
 visible_during_screen_sharing = false
+
 ```
 
 Set `PASTED_HOME` to use a different data directory (useful for testing). `PASTED_LOG=pasted=debug` enables verbose logging.
