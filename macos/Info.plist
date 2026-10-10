@@ -8,6 +8,8 @@
 	<string>Pasted</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.pasted.app</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>pasted</string>
 	<key>CFBundlePackageType</key>

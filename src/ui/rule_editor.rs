@@ -163,6 +163,8 @@ pub fn edit_rule(initial: &Rule, title: &str, boards: &[String], mtm: MainThread
     let mut problem: Option<String> = None;
     loop {
         let alert = NSAlert::new(mtm);
+        // SAFETY: setting a valid image.
+        unsafe { alert.setIcon(super::app_icon().as_deref()) };
         alert.setMessageText(&ns(title));
         alert.setInformativeText(&ns(problem.as_deref().unwrap_or(
             "New copies matching every condition are removed after the chosen time or pinned. Pinned items never expire.",

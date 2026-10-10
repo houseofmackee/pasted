@@ -30,6 +30,7 @@ Requires macOS 14 or later and a Rust toolchain.
 ```sh
 cargo run --release            # run from the terminal
 scripts/bundle.sh              # build and ad-hoc sign dist/Pasted.app
+scripts/make_icon.sh           # rebuild macos/AppIcon.icns after editing macos/AppIcon.svg (needs librsvg)
 open dist/Pasted.app
 ```
 

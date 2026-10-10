@@ -9,6 +9,8 @@ use super::{ns, rect};
 
 fn alert(title: &str, message: &str, buttons: &[&str], mtm: MainThreadMarker) -> objc2::rc::Retained<NSAlert> {
     let a = NSAlert::new(mtm);
+    // SAFETY: setting a valid image.
+    unsafe { a.setIcon(super::app_icon().as_deref()) };
     a.setMessageText(&ns(title));
     a.setInformativeText(&ns(message));
     for b in buttons {

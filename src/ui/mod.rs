@@ -16,6 +16,22 @@ use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSFont, NSLineBreakMode, NSTextField};
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
+thread_local! {
+    static APP_ICON: std::cell::OnceCell<Option<Retained<objc2_app_kit::NSImage>>> = const { std::cell::OnceCell::new() };
+}
+
+/// The app icon, built into the binary so it also shows when Pasted runs
+/// from a terminal rather than from Pasted.app.
+pub fn app_icon() -> Option<Retained<objc2_app_kit::NSImage>> {
+    APP_ICON.with(|cell| {
+        cell.get_or_init(|| {
+            let data = objc2_foundation::NSData::with_bytes(include_bytes!("../../macos/AppIcon.icns"));
+            objc2_app_kit::NSImage::initWithData(<objc2_app_kit::NSImage as objc2::AnyThread>::alloc(), &data)
+        })
+        .clone()
+    })
+}
+
 /// Brings our (menu bar only) app to the front. `NSApplication::activate` is
 /// cooperative on macOS 14+ and does nothing when another app is active, so
 /// the older call is still needed for windows opened from the menu bar.

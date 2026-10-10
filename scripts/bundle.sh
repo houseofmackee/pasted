@@ -15,10 +15,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/pasted "$APP/Contents/MacOS/pasted"
 cp macos/Info.plist "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
-if [ -f macos/AppIcon.icns ]; then
-    cp macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
-    plutil -replace CFBundleIconFile -string AppIcon "$APP/Contents/Info.plist"
-fi
+cp macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --options runtime --timestamp=none --sign "${SIGN_IDENTITY:--}" "$APP"
 codesign --verify --strict "$APP"

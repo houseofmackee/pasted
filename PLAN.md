@@ -188,12 +188,12 @@ Done:
 - **Paste Stack order**: oldest first (default) or newest first, fixed per stack; queue logic in a tested module; panel shows the order and is now opaque for readable text.
 - **Accessibility**: welcome window on first launch and from the menu (shortcut, live Accessibility status with a deep link, Paste import; replaces the automatic import prompt), also shown the first time a paste needs permission; cards are single VoiceOver buttons with a spoken description (type, title, app, age, content, expiry, position; sensitive items never read out) and selection, results and panels are announced; labelled search field and tabs; Reduce Motion turns off window animations; Increase Contrast adds card borders.
 - **Statistics table**: Charts or Table view in the Statistics window (every chart's exact values in selectable, aligned tables; all apps rather than the top six), Copy Data puts tab-separated text and HTML tables on the clipboard for spreadsheets and documents (not added to history), `pasted stats --tsv`; sensitive items stay hidden.
+- **App icon**: stacked shelf cards on a blue-violet tile, drawn on the macOS icon grid; SVG source with `scripts/make_icon.sh` to rebuild the `.icns`; used by `Pasted.app` and built into the binary so dialogs show it when running from a terminal.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
 Distribution
-- App icon (dialogs currently show a generic icon).
 - DMG for direct download (`hdiutil`), built from `dist/Pasted.app`, Apple silicon only.
 
 Testing
