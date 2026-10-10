@@ -60,22 +60,8 @@ fn captured(board: &Board, filter: &PrivacyFilter) -> Box<NewItem> {
 }
 
 /// (index, uti, data) sorted, for comparing representation sets.
-///
-/// When an item has rich text, macOS adds a UTF-16 copy of the plain text
-/// by itself. It must say the same as the UTF-8 text and is then left out
-/// of the comparison.
 fn key(reps: &[Representation]) -> Vec<(u32, String, Vec<u8>)> {
-    for r in reps.iter().filter(|r| r.uti == UTI_UTF16_PLAIN_TEXT) {
-        let utf8 = reps.iter().find(|p| p.index == r.index && p.uti == UTI_PLAIN_TEXT).expect("UTF-8 text too");
-        let units: Vec<u16> = r.data.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c)).collect();
-        let text = String::from_utf16(&units).unwrap();
-        assert_eq!(text.trim_start_matches('\u{feff}').as_bytes(), utf8.data.as_slice());
-    }
-    let mut v: Vec<_> = reps
-        .iter()
-        .filter(|r| r.uti != UTI_UTF16_PLAIN_TEXT)
-        .map(|r| (r.index, r.uti.clone(), r.data.clone()))
-        .collect();
+    let mut v: Vec<_> = reps.iter().map(|r| (r.index, r.uti.clone(), r.data.clone())).collect();
     v.sort();
     v
 }
@@ -117,6 +103,26 @@ fn rich_text_keeps_every_representation() {
     assert_eq!(item.kind, ItemKind::RichText);
     assert_eq!(item.text, "Release notes");
     assert_eq!(key(&item.representations), key(&rich_reps()));
+}
+
+#[test]
+fn utf16_copy_added_by_macos_is_not_stored() {
+    let board = Board::new();
+    pasteboard::write(&board, &rich_reps());
+    // macOS offers a UTF-16 version of the text next to the formats we wrote.
+    let types = pasteboard::all_types(&board);
+    assert!(types.contains(&UTI_UTF16_PLAIN_TEXT.to_string()), "{types:?}");
+    let item = captured(&board, &filter());
+    assert!(item.representations.iter().all(|r| r.uti != UTI_UTF16_PLAIN_TEXT));
+
+    // Pasting it back still offers UTF-16 to apps that ask for it.
+    let (_dir, mut store) = temp_store();
+    let id = store.insert(&item, true).unwrap().id();
+    let target = Board::new();
+    pasteboard::write(&target, &store.representations(id).unwrap());
+    let utf16 = target.dataForType(&NSString::from_str(UTI_UTF16_PLAIN_TEXT)).map(|d| d.to_vec());
+    let text = utf16.as_deref().and_then(crate::model::decode_utf16_external);
+    assert_eq!(text.as_deref(), Some("Release notes"));
 }
 
 #[test]

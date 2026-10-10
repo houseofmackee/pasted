@@ -50,6 +50,7 @@ pub fn read(pb: &NSPasteboard, max_bytes: usize) -> Result<Vec<Representation>, 
             out.push(Representation { index: index as u32, uti: uti_str, data: data.to_vec() });
         }
     }
+    let out = crate::model::without_redundant_utf16(out);
     if out.is_empty() { Err(ReadError::Empty) } else { Ok(out) }
 }
 

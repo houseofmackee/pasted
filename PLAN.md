@@ -190,12 +190,12 @@ Done:
 - **Statistics table**: Charts or Table view in the Statistics window (every chart's exact values in selectable, aligned tables; all apps rather than the top six), Copy Data puts tab-separated text and HTML tables on the clipboard for spreadsheets and documents (not added to history), `pasted stats --tsv`; sensitive items stay hidden.
 - **App icon**: stacked shelf cards on a blue-violet tile, drawn on the macOS icon grid; SVG source with `scripts/make_icon.sh` to rebuild the `.icns`; used by `Pasted.app` and built into the binary so dialogs show it when running from a terminal.
 - **Testing**: the crate is now a library plus a thin binary, so tests and benchmarks can reach the code. Pasteboard integration tests on private pasteboards (plain, rich, multi-item, image, concealed, patterns, size limit, store and write back exactly, duplicate copies); card layout snapshot test on the main thread (12 kinds, every subview's frame and text, checks that nothing spills outside the card and sensitive text never shows); criterion benchmarks (one insert into 10k history about 0.37 ms, 10k batch import about 1 s, all 7 shelf searches at 100k items within 20 ms, 0.2 to 18.6 ms); `docs/RELEASE_CHECKLIST.md` for full-screen apps, displays, Spaces, Stage Manager, secure input, install and accessibility.
+- **One plain text encoding**: the UTF-16 copy of the plain text that macOS adds to rich text copies is dropped when it repeats the UTF-8 text (kept when it differs, for example bullets some apps only put in the UTF-16 version), on capture and on every insert; checksums leave it out so old and new copies are still duplicates; migration 5 cleans stored items (45 of 1,432 imported items, 6 kept because their UTF-16 text differs). Pasting still offers UTF-16, which macOS recreates.
 - **Phase 6**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`; `scripts/make_dmg.sh` builds `dist/Pasted-<version>-arm64.dmg` for direct download (built-in `hdiutil` only, LZMA compressed, app plus Applications link plus "Read Me First.txt" on opening an unnotarized app), refuses non-arm64 binaries, mounts the result to verify the signature, architecture and layout, and writes a SHA-256 file. Notarization and Sparkle stay deferred.
 
 Next:
 
 Nothing scheduled. Candidates:
-- Store only one plain text encoding: macOS adds a UTF-16 copy of the plain text to rich text copies, and Pasted stores it (found by the pasteboard tests). Dropping it needs the duplicate check to treat old and new items alike.
 - Search headroom: common-word queries take about 18 ms of the 20 ms budget at 100k items.
 
 Known limitations:

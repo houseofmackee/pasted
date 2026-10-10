@@ -81,6 +81,40 @@ pub struct Representation {
     pub data: Vec<u8>,
 }
 
+/// Decodes `public.utf16-external-plain-text`: UTF-16 with a byte order
+/// mark, little-endian when there is none.
+pub fn decode_utf16_external(data: &[u8]) -> Option<String> {
+    let (body, big_endian) = match data {
+        [0xFF, 0xFE, rest @ ..] => (rest, false),
+        [0xFE, 0xFF, rest @ ..] => (rest, true),
+        _ => (data, false),
+    };
+    let (pairs, rest) = body.as_chunks::<2>();
+    if !rest.is_empty() {
+        return None;
+    }
+    let units: Vec<u16> =
+        pairs.iter().map(|p| if big_endian { u16::from_be_bytes(*p) } else { u16::from_le_bytes(*p) }).collect();
+    String::from_utf16(&units).ok()
+}
+
+/// macOS adds a UTF-16 copy of the plain text to many copies (rich text, for
+/// example). When it says exactly what the UTF-8 text of the same item says,
+/// it is redundant: macOS recreates it from the UTF-8 text when pasting.
+pub fn is_redundant_utf16(r: &Representation, reps: &[Representation]) -> bool {
+    r.uti == UTI_UTF16_PLAIN_TEXT
+        && reps.iter().any(|p| {
+            p.index == r.index
+                && p.uti == UTI_PLAIN_TEXT
+                && decode_utf16_external(&r.data).is_some_and(|t| t.as_bytes() == p.data.as_slice())
+        })
+}
+
+pub fn without_redundant_utf16(reps: Vec<Representation>) -> Vec<Representation> {
+    let redundant: Vec<bool> = reps.iter().map(|r| is_redundant_utf16(r, &reps)).collect();
+    reps.into_iter().zip(redundant).filter(|(_, drop)| !drop).map(|(r, _)| r).collect()
+}
+
 /// Extra details derived from the content, stored as JSON.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ItemMeta {
@@ -203,4 +237,45 @@ pub fn relative_time(ms: i64) -> String {
 
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rep(index: u32, uti: &str, data: &[u8]) -> Representation {
+        Representation { index, uti: uti.into(), data: data.to_vec() }
+    }
+
+    fn utf16(text: &str, bom: &[u8], big_endian: bool) -> Vec<u8> {
+        let mut out = bom.to_vec();
+        for u in text.encode_utf16() {
+            out.extend(if big_endian { u.to_be_bytes() } else { u.to_le_bytes() });
+        }
+        out
+    }
+
+    #[test]
+    fn decodes_utf16_with_or_without_a_byte_order_mark() {
+        assert_eq!(decode_utf16_external(&utf16("Café ✓", &[0xFF, 0xFE], false)).as_deref(), Some("Café ✓"));
+        assert_eq!(decode_utf16_external(&utf16("Café ✓", &[0xFE, 0xFF], true)).as_deref(), Some("Café ✓"));
+        assert_eq!(decode_utf16_external(&utf16("plain", &[], false)).as_deref(), Some("plain"));
+        assert_eq!(decode_utf16_external(&[0xFF, 0xFE, 0x41]), None, "odd length");
+    }
+
+    #[test]
+    fn only_identical_utf16_text_is_redundant() {
+        let reps = vec![
+            rep(0, UTI_PLAIN_TEXT, b"same"),
+            rep(0, UTI_UTF16_PLAIN_TEXT, &utf16("same", &[0xFF, 0xFE], false)),
+            rep(1, UTI_PLAIN_TEXT, b"first"),
+            rep(1, UTI_UTF16_PLAIN_TEXT, &utf16("different", &[0xFF, 0xFE], false)),
+            rep(2, UTI_UTF16_PLAIN_TEXT, &utf16("only UTF-16", &[0xFF, 0xFE], false)),
+        ];
+        let kept = without_redundant_utf16(reps.clone());
+        assert_eq!(kept.len(), 4);
+        assert!(!kept.contains(&reps[1]), "the repeat is dropped");
+        assert!(kept.contains(&reps[3]), "different text is kept");
+        assert!(kept.contains(&reps[4]), "UTF-16 without UTF-8 is the only text, so it is kept");
+    }
 }

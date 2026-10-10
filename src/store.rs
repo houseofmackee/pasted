@@ -16,8 +16,17 @@ const INLINE_LIMIT: usize = 32 * 1024;
 /// Only the first part of very long text is indexed for search.
 const FTS_TEXT_LIMIT: usize = 200_000;
 
-const MIGRATIONS: &[&str] = &[
-    r#"
+/// Schema changes, applied in order; `PRAGMA user_version` counts the
+/// applied ones.
+enum Migration {
+    Sql(&'static str),
+    /// A change to stored data that needs Rust (for example decoding).
+    Rust(fn(&mut Store) -> Result<()>),
+}
+
+const MIGRATIONS: &[Migration] = &[
+    Migration::Sql(
+        r#"
 CREATE TABLE apps (
     id INTEGER PRIMARY KEY,
     bundle_id TEXT NOT NULL UNIQUE,
@@ -85,7 +94,9 @@ CREATE TABLE import_runs (
     failed INTEGER NOT NULL DEFAULT 0
 );
 "#,
-    r#"
+    ),
+    Migration::Sql(
+        r#"
 CREATE TABLE link_previews (
     url TEXT PRIMARY KEY,
     title TEXT,
@@ -97,13 +108,19 @@ CREATE TABLE link_previews (
 );
 CREATE INDEX items_link_url ON items(json_extract(meta, '$.url')) WHERE kind = 'link';
 "#,
-    r#"
+    ),
+    Migration::Sql(
+        r#"
 ALTER TABLE items ADD COLUMN expires_at INTEGER;
 CREATE INDEX items_expires_at ON items(expires_at) WHERE expires_at IS NOT NULL;
 "#,
-    r#"
+    ),
+    Migration::Sql(
+        r#"
 ALTER TABLE items ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0;
 "#,
+    ),
+    Migration::Rust(Store::drop_redundant_utf16),
 ];
 
 /// Failed link previews are retried after this long.
@@ -202,8 +219,10 @@ pub struct Store {
     keys: Option<crate::encryption::Keys>,
 }
 
+/// Identifies content for duplicate detection. Redundant UTF-16 text is
+/// left out, so it matches items stored before it was dropped.
 pub fn checksum(reps: &[Representation]) -> String {
-    let mut sorted: Vec<&Representation> = reps.iter().collect();
+    let mut sorted: Vec<&Representation> = reps.iter().filter(|r| !crate::model::is_redundant_utf16(r, reps)).collect();
     sorted.sort_by(|a, b| (a.index, &a.uti).cmp(&(b.index, &b.uti)));
     let mut h = Sha256::new();
     for r in sorted {
@@ -322,11 +341,63 @@ impl Store {
         if version > MIGRATIONS.len() {
             bail!("database was created by a newer version of Pasted (schema {version})");
         }
-        for (i, sql) in MIGRATIONS.iter().enumerate().skip(version) {
-            let tx = self.conn.transaction()?;
-            tx.execute_batch(sql).with_context(|| format!("migration {}", i + 1))?;
-            tx.pragma_update(None, "user_version", i + 1)?;
-            tx.commit()?;
+        for (i, migration) in MIGRATIONS.iter().enumerate().skip(version) {
+            match migration {
+                Migration::Sql(sql) => {
+                    let tx = self.conn.transaction()?;
+                    tx.execute_batch(sql).with_context(|| format!("migration {}", i + 1))?;
+                    tx.pragma_update(None, "user_version", i + 1)?;
+                    tx.commit()?;
+                }
+                Migration::Rust(apply) => self
+                    .batch(|s| {
+                        apply(s)?;
+                        s.conn.pragma_update(None, "user_version", i + 1)?;
+                        Ok(())
+                    })
+                    .with_context(|| format!("migration {}", i + 1))?,
+            }
+        }
+        Ok(())
+    }
+
+    /// Migration: removes UTF-16 plain text that repeats the UTF-8 text
+    /// (macOS adds it to rich text copies) and recomputes the checksums, so
+    /// new copies of the same content are recognized as duplicates.
+    fn drop_redundant_utf16(&mut self) -> Result<()> {
+        let ids: Vec<i64> = {
+            let mut stmt = self.conn.prepare(
+                "SELECT DISTINCT r16.item_id FROM representations r16
+                 JOIN representations r8 ON r8.item_id = r16.item_id AND r8.idx = r16.idx AND r8.uti = ?2
+                 WHERE r16.uti = ?1",
+            )?;
+            stmt.query_map([UTI_UTF16_PLAIN_TEXT, UTI_PLAIN_TEXT], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+        };
+        let mut cleaned = 0;
+        for id in ids {
+            let reps = self.representations(id)?;
+            let redundant: Vec<u32> =
+                reps.iter().filter(|r| crate::model::is_redundant_utf16(r, &reps)).map(|r| r.index).collect();
+            if redundant.is_empty() {
+                continue;
+            }
+            for idx in &redundant {
+                self.conn.execute(
+                    "DELETE FROM representations WHERE item_id = ?1 AND idx = ?2 AND uti = ?3",
+                    params![id, idx, UTI_UTF16_PLAIN_TEXT],
+                )?;
+            }
+            let kept: Vec<Representation> =
+                reps.into_iter().filter(|r| !(r.uti == UTI_UTF16_PLAIN_TEXT && redundant.contains(&r.index))).collect();
+            let size: usize = kept.iter().map(|r| r.data.len()).sum();
+            self.conn.execute(
+                "UPDATE items SET checksum = ?2, size_bytes = ?3 WHERE id = ?1",
+                params![id, checksum(&kept), size as i64],
+            )?;
+            cleaned += 1;
+        }
+        if cleaned > 0 {
+            tracing::info!("removed duplicate UTF-16 text from {cleaned} items");
         }
         Ok(())
     }
@@ -383,7 +454,15 @@ impl Store {
     /// Stores a new item. With `dedupe`, identical content already in history
     /// is moved to the top instead of being stored twice.
     pub fn insert(&mut self, item: &NewItem, dedupe: bool) -> Result<Inserted> {
-        let sum = checksum(&item.representations);
+        // Covers every source (capture, import, restore); copies only when
+        // something is dropped.
+        let reps: std::borrow::Cow<[Representation]> =
+            if item.representations.iter().any(|r| crate::model::is_redundant_utf16(r, &item.representations)) {
+                std::borrow::Cow::Owned(crate::model::without_redundant_utf16(item.representations.clone()))
+            } else {
+                std::borrow::Cow::Borrowed(&item.representations)
+            };
+        let sum = checksum(&reps);
         if dedupe {
             let existing: Option<i64> = self
                 .conn
@@ -402,12 +481,12 @@ impl Store {
             }
         }
 
-        let mut blobs = Vec::with_capacity(item.representations.len());
-        for r in &item.representations {
+        let mut blobs = Vec::with_capacity(reps.len());
+        for r in reps.iter() {
             blobs.push(if r.data.len() > INLINE_LIMIT { Some(self.write_blob(&r.data)?) } else { None });
         }
         let app_id = item.source_app.as_ref().map(|a| self.upsert_app(a)).transpose()?;
-        let size: usize = item.representations.iter().map(|r| r.data.len()).sum();
+        let size: usize = reps.iter().map(|r| r.data.len()).sum();
 
         let tx = self.conn.savepoint()?;
         tx.execute(
@@ -435,7 +514,7 @@ impl Store {
                 "INSERT OR REPLACE INTO representations (item_id, idx, uti, data, blob, size)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?;
-            for (r, blob) in item.representations.iter().zip(&blobs) {
+            for (r, blob) in reps.iter().zip(&blobs) {
                 let inline = if blob.is_none() { Some(&r.data[..]) } else { None };
                 stmt.execute(params![id, r.index, r.uti, inline, blob, r.data.len() as i64])?;
             }
@@ -1294,6 +1373,57 @@ pub mod tests {
             external_id: None,
             in_history: true,
         }
+    }
+
+    fn with_utf16(text: &str) -> NewItem {
+        let mut item = text_item(text, 1_000);
+        let mut data = vec![0xFF, 0xFE];
+        data.extend(text.encode_utf16().flat_map(u16::to_le_bytes));
+        item.representations.push(Representation { index: 0, uti: UTI_UTF16_PLAIN_TEXT.into(), data });
+        item
+    }
+
+    #[test]
+    fn redundant_utf16_is_not_stored_and_does_not_change_duplicates() {
+        let (_dir, mut s) = temp_store();
+        let item = with_utf16("Release notes");
+        assert_eq!(checksum(&item.representations), checksum(&text_item("Release notes", 1_000).representations));
+        let id = s.insert(&item, true).unwrap().id();
+        let reps = s.representations(id).unwrap();
+        assert_eq!(reps.len(), 1);
+        assert_eq!(reps[0].uti, UTI_PLAIN_TEXT);
+        assert_eq!(s.stats().unwrap().bytes, "Release notes".len() as i64);
+        assert_eq!(s.insert(&text_item("Release notes", 2_000), true).unwrap(), Inserted::Existing(id));
+    }
+
+    #[test]
+    fn migration_removes_stored_utf16_copies() {
+        let (dir, mut s) = temp_store();
+        let id = s.insert(&text_item("Old rich text", 1_000), true).unwrap().id();
+        let different = s.insert(&text_item("Keep me", 1_000), true).unwrap().id();
+        // Recreate what older versions stored: the UTF-16 copy and a checksum over it.
+        let old = with_utf16("Old rich text");
+        let utf16 = old.representations[1].data.clone();
+        let mut other = vec![0xFF, 0xFE];
+        other.extend("Something else".encode_utf16().flat_map(u16::to_le_bytes));
+        for (item, data) in [(id, &utf16), (different, &other)] {
+            s.conn
+                .execute(
+                    "INSERT INTO representations (item_id, idx, uti, data, size) VALUES (?1, 0, ?2, ?3, ?4)",
+                    params![item, UTI_UTF16_PLAIN_TEXT, data, data.len() as i64],
+                )
+                .unwrap();
+        }
+        s.conn.execute("UPDATE items SET checksum = 'old', size_bytes = 99 WHERE id = ?1", [id]).unwrap();
+        s.conn.pragma_update(None, "user_version", MIGRATIONS.len() - 1).unwrap();
+        drop(s);
+
+        let mut s = Store::open(&dir.path().join("t.db"), dir.path().join("blobs")).unwrap();
+        let reps = s.representations(id).unwrap();
+        assert!(reps.iter().all(|r| r.uti != UTI_UTF16_PLAIN_TEXT));
+        assert_eq!(s.get(id).unwrap().unwrap().size_bytes, "Old rich text".len() as i64);
+        assert_eq!(s.representations(different).unwrap().len(), 2, "UTF-16 with other text is kept");
+        assert_eq!(s.insert(&with_utf16("Old rich text"), true).unwrap(), Inserted::Existing(id));
     }
 
     #[test]
