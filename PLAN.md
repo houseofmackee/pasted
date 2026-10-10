@@ -17,7 +17,8 @@ Pasted is a native macOS clipboard manager written in Rust, modeled on [Paste](h
 
 - iOS/iPadOS companion apps.
 - Team/shared pinboards (needs a server or CloudKit sharing; revisit after sync).
-- Mac App Store distribution (sandboxing blocks synthetic paste via accessibility; ship Developer ID + notarization instead).
+- Mac App Store distribution (sandboxing blocks synthetic paste via accessibility). Distribution is a direct-download DMG only.
+- Intel Macs. Builds target Apple silicon (arm64) only.
 
 ## 2. Technology choices
 
@@ -34,8 +35,8 @@ Pasted is a native macOS clipboard manager written in Rust, modeled on [Paste](h
 | Import decoding | `plist`, `flate2`, `lzfse` crates | Paste stores data as JSON, deflate, LZFSE and binary plists (see section 6). |
 | Logging | `tracing` + `tracing-oslog` | Shows up in Console.app. |
 | Launch at login | `SMAppService` (macOS 13+) | Modern, no helper app. |
-| Updates | Sparkle 2 (embedded framework) | Standard for Developer ID apps. |
-| Packaging | `cargo` build + a `xtask` that assembles `Pasted.app`, signs, notarizes, builds DMG | Reproducible from CLI. |
+| Updates | None for now (Sparkle 2 deferred) | Users download new DMGs by hand until updates are revisited. |
+| Packaging | `scripts/bundle.sh` assembles and signs `Pasted.app`; a DMG for direct download | Reproducible from CLI. Notarization deferred. |
 
 Minimum macOS: 14.0 (Sonoma). Set in `.cargo/config.toml` and `macos/Info.plist`.
 
@@ -156,7 +157,7 @@ Cargo project, git repo, macOS-only build guard, Info.plist template, deployment
 - Rule engine, transforms, snippets, encryption, statistics, MCP server, export.
 
 **Phase 6: distribution**
-- `xtask bundle` (build universal binary, assemble `.app`, copy `Info.plist`, icons), codesign with hardened runtime, notarize, staple, DMG, Sparkle appcast.
+- Bundle script (arm64 build, assemble `.app`, copy `Info.plist`, icons), codesign, DMG for direct download. Notarization, stapling and Sparkle are deferred (section 9).
 - Launch at login via `SMAppService`.
 
 **Phase 7: sync**
@@ -186,17 +187,14 @@ Done:
 - **Per-device statistics**: device filter in the Statistics window (every tile and chart), a Devices panel with item share, top app and last copy, `pasted stats --device` and a per-device summary; window sized to the screen and scrolls only when needed.
 - **Paste Stack order**: oldest first (default) or newest first, fixed per stack; queue logic in a tested module; panel shows the order and is now opaque for readable text.
 - **Accessibility**: welcome window on first launch and from the menu (shortcut, live Accessibility status with a deep link, Paste import; replaces the automatic import prompt), also shown the first time a paste needs permission; cards are single VoiceOver buttons with a spoken description (type, title, app, age, content, expiry, position; sensitive items never read out) and selection, results and panels are announced; labelled search field and tabs; Reduce Motion turns off window animations; Increase Contrast adds card borders.
+- **Statistics table**: Charts or Table view in the Statistics window (every chart's exact values in selectable, aligned tables; all apps rather than the top six), Copy Data puts tab-separated text and HTML tables on the clipboard for spreadsheets and documents (not added to history), `pasted stats --tsv`; sensitive items stay hidden.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
-Features
-- Statistics: a table or "copy data" view of the chart values.
-
 Distribution
 - App icon (dialogs currently show a generic icon).
-- Universal binary (needs rustup for the x86_64 target).
-- Notarization, DMG and Sparkle updates (need the deferred bundle id and signing team).
+- DMG for direct download (`hdiutil`), built from `dist/Pasted.app`, Apple silicon only.
 
 Testing
 - Capture and write-back integration tests against a private named pasteboard.
@@ -297,4 +295,6 @@ Excluded apps and rules live in the Core Data store or preferences depending on 
 
 - **License**: open source, dual licensed MIT OR Apache-2.0 (Rust ecosystem convention). Not a paid product.
 - **Deferred: bundle identifier and signing team.** `io.pasted.app` stays a placeholder until a real Apple Developer team exists. Revisit before Phase 6 notarization.
+- **Distribution: direct-download DMG, Apple silicon only.** No universal binary, no Mac App Store.
+- **Deferred: notarization and Sparkle updates.** Without notarization, first launch needs right-click > Open (or System Settings > Privacy & Security > Open Anyway); document this next to the download.
 - **Deferred: iCloud sync.** Phase 7 is on hold. Revisit later, including whether a folder-based sync (iCloud Drive/Dropbox) should come before CloudKit.

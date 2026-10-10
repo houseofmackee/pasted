@@ -133,6 +133,9 @@ pub enum Command {
         /// Only items copied on this device (see the device list in the output).
         #[arg(long)]
         device: Option<String>,
+        /// Print every chart's values as tab-separated tables.
+        #[arg(long, conflicts_with = "show")]
+        tsv: bool,
     },
     /// Print data file locations.
     Paths,
@@ -545,7 +548,7 @@ pub fn run(command: Command) -> Result<()> {
                     .postNotificationName_object_userInfo_deliverImmediately(&name, None, None, true)
             };
         }
-        Command::Stats { days, device, .. } => {
+        Command::Stats { days, device, tsv, .. } => {
             let device = device.map(|d| if d.eq_ignore_ascii_case("unknown") { String::new() } else { d });
             if let Some(d) = &device
                 && !store.device_names()?.iter().any(|(n, _)| n == d)
@@ -553,8 +556,15 @@ pub fn run(command: Command) -> Result<()> {
                 bail!("no items from a device named {d:?}");
             }
             let r = store.report(days, now_ms(), device.as_deref())?;
+            if tsv {
+                print!(
+                    "{}",
+                    crate::stats_data::to_tsv(&crate::stats_data::heading(&r), &crate::stats_data::tables(&r))
+                );
+                return Ok(());
+            }
             if let Some(d) = &device {
-                println!("Device: {}", crate::ui::stats_window::device_label(d));
+                println!("Device: {}", crate::stats_data::device_label(d));
             }
             println!("Added in the last {days} days: {} ({} in the {days} days before)", r.added, r.added_previous);
             println!("Pasted with Pasted (all time): {}", r.pastes);
@@ -567,7 +577,7 @@ pub fn run(command: Command) -> Result<()> {
                 for d in &r.devices {
                     println!(
                         "  {:<24} {:>5}  last copy {}{}",
-                        crate::ui::stats_window::device_label(&d.name),
+                        crate::stats_data::device_label(&d.name),
                         d.items,
                         relative_time(d.last_copy),
                         d.top_app.as_ref().map(|a| format!(", mostly {a}")).unwrap_or_default()

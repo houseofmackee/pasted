@@ -1,18 +1,24 @@
-//! The Statistics window: headline tiles and charts over a chosen range.
+//! The Statistics window: headline tiles and charts over a chosen range,
+//! or the same numbers as tables.
 
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{MainThreadOnly, sel};
-use objc2_app_kit::{NSBackingStoreType, NSSegmentSwitchTracking, NSSegmentedControl, NSWindow, NSWindowStyleMask};
+use objc2_app_kit::{
+    NSAccessibility, NSBackingStoreType, NSButton, NSFont, NSScrollView, NSSegmentSwitchTracking, NSSegmentedControl,
+    NSTextView, NSWindow, NSWindowStyleMask,
+};
 use objc2_foundation::{MainThreadMarker, NSArray, NSString};
 
 use super::chart::{ChartView, Column, Content, Row, compact};
 use super::icons::IconCache;
+use super::shelf::tag;
 use super::{activate_app, ns, rect};
 use crate::model::ItemKind;
 use crate::store::Report;
 
 pub const RANGES: [i64; 3] = [7, 30, 90];
+pub const COPY_DATA: u8 = 81;
 const W: f64 = 920.0;
 /// Full height of the content; the window is this tall when the screen
 /// allows, and scrolls otherwise.
@@ -22,7 +28,19 @@ const GAP: f64 = 16.0;
 
 pub struct StatsWindow {
     pub window: Retained<NSWindow>,
+    /// Height of the visible content area.
+    visible_h: f64,
+    outer: Retained<NSScrollView>,
+    plane: Retained<ChartView>,
     range: Retained<NSSegmentedControl>,
+    view: Retained<NSSegmentedControl>,
+    copy: Retained<NSButton>,
+    copied_at: Option<std::time::Instant>,
+    table: Retained<NSScrollView>,
+    table_text: Retained<NSTextView>,
+    /// The current numbers, ready for the pasteboard.
+    tsv: String,
+    html: String,
     device: Retained<objc2_app_kit::NSPopUpButton>,
     /// Device keys behind the popup entries after "All devices".
     device_keys: Vec<String>,
@@ -36,9 +54,7 @@ pub struct StatsWindow {
     icons: IconCache,
 }
 
-pub fn device_label(name: &str) -> String {
-    if name.is_empty() { "Unknown device".into() } else { name.to_string() }
-}
+pub use crate::stats_data::device_label;
 
 fn tile(label: &str, value: String, note: String) -> Content {
     Content::Tile { label: label.into(), value, note }
@@ -73,8 +89,31 @@ impl StatsWindow {
         window.setContentView(Some(&scroll));
 
         let title = super::label("Statistics", 20.0, true, mtm);
-        title.setFrame(rect(M, 18.0, 300.0, 28.0));
+        title.setFrame(rect(M, 18.0, 120.0, 28.0));
         plane.addSubview(&title);
+        let view_labels = [ns("Charts"), ns("Table")];
+        // SAFETY: the target implements `statsRange:`.
+        let view = unsafe {
+            NSSegmentedControl::segmentedControlWithLabels_trackingMode_target_action(
+                &NSArray::from_retained_slice(&view_labels),
+                NSSegmentSwitchTracking::SelectOne,
+                Some(target),
+                Some(sel!(statsRange:)),
+                mtm,
+            )
+        };
+        view.setSelectedSegment(0);
+        view.setFrame(rect(M + 124.0, 20.0, 130.0, 24.0));
+        view.setAccessibilityLabel(Some(&ns("Show as")));
+        plane.addSubview(&view);
+        // SAFETY: the target implements `buttonAction:`.
+        let copy = unsafe {
+            NSButton::buttonWithTitle_target_action(&ns("Copy Data"), Some(target), Some(sel!(buttonAction:)), mtm)
+        };
+        copy.setTag(tag(COPY_DATA, 0));
+        copy.setFrame(rect(M + 124.0 + 130.0 + 8.0, 18.0, 110.0, 28.0));
+        copy.setToolTip(Some(&ns("Copy every table, ready to paste into a spreadsheet or document")));
+        plane.addSubview(&copy);
         let labels: Vec<Retained<NSString>> = RANGES.iter().map(|d| ns(&format!("{d} days"))).collect();
         // SAFETY: the target implements `statsRange:`.
         let range = unsafe {
@@ -123,9 +162,44 @@ impl StatsWindow {
         let apps = mk(M, 596.0, half, 200.0);
         let pasted = mk(M + half + GAP, 596.0, half, 200.0);
         let devices = mk(M, 812.0, W - 2.0 * M, 150.0);
+
+        let table = NSScrollView::initWithFrame(NSScrollView::alloc(mtm), rect(M, 60.0, W - 2.0 * M, h - 60.0 - M));
+        table.setHasVerticalScroller(true);
+        table.setHasHorizontalScroller(true);
+        table.setBorderType(objc2_app_kit::NSBorderType::LineBorder);
+        let table_text = NSTextView::initWithFrame(NSTextView::alloc(mtm), rect(0.0, 0.0, W - 2.0 * M, h - 60.0 - M));
+        table_text.setEditable(false);
+        table_text.setSelectable(true);
+        table_text.setTextContainerInset(objc2_foundation::NSSize::new(10.0, 10.0));
+        // Long rows scroll sideways instead of wrapping, so columns stay aligned.
+        table_text.setHorizontallyResizable(true);
+        table_text.setMaxSize(objc2_foundation::NSSize::new(1.0e7, 1.0e7));
+        // SAFETY: the text view owns its container for its whole lifetime.
+        if let Some(container) = unsafe { table_text.textContainer() } {
+            container.setWidthTracksTextView(false);
+            container.setContainerSize(objc2_foundation::NSSize::new(1.0e7, 1.0e7));
+        }
+        // SAFETY: reading an AppKit constant.
+        table_text.setFont(Some(&NSFont::monospacedSystemFontOfSize_weight(12.0, unsafe {
+            objc2_app_kit::NSFontWeightRegular
+        })));
+        table_text.setAccessibilityLabel(Some(&ns("Statistics table")));
+        table.setDocumentView(Some(&table_text));
+        table.setHidden(true);
+        plane.addSubview(&table);
         window.center();
         StatsWindow {
             window,
+            visible_h: h,
+            outer: scroll,
+            plane,
+            view,
+            copy,
+            copied_at: None,
+            table,
+            table_text,
+            tsv: String::new(),
+            html: String::new(),
             range,
             device,
             device_keys: Vec::new(),
@@ -167,13 +241,66 @@ impl StatsWindow {
         RANGES.get(self.range.selectedSegment().max(0) as usize).copied().unwrap_or(30)
     }
 
+    fn showing_table(&self) -> bool {
+        self.view.selectedSegment() == 1
+    }
+
+    /// Shows the charts or the table. The table fills the window and
+    /// scrolls on its own; the charts scroll with the window.
+    fn apply_view(&self) {
+        let table = self.showing_table();
+        for v in self.tiles.iter().chain([
+            &self.per_day,
+            &self.per_hour,
+            &self.kinds,
+            &self.apps,
+            &self.pasted,
+            &self.devices,
+        ]) {
+            v.setHidden(table);
+        }
+        self.table.setHidden(!table);
+        let h = if table { self.visible_h } else { CONTENT_H };
+        self.plane.setFrameSize(objc2_foundation::NSSize::new(W, h));
+        self.outer.setHasVerticalScroller(!table);
+        self.plane.scrollPoint(objc2_foundation::NSPoint::new(0.0, 0.0));
+    }
+
+    /// The numbers as tab-separated text and as HTML tables.
+    pub fn data(&self) -> (&str, &str) {
+        (&self.tsv, &self.html)
+    }
+
+    /// Confirms a copy on the button for a moment.
+    pub fn mark_copied(&mut self) {
+        self.copy.setTitle(&ns("Copied \u{2713}"));
+        self.copied_at = Some(std::time::Instant::now());
+        super::a11y::announce(&self.window, "Statistics copied");
+    }
+
+    /// Restores the Copy Data title after a copy (called periodically).
+    pub fn tick(&mut self) {
+        if self.copied_at.is_some_and(|t| t.elapsed() > std::time::Duration::from_millis(1500)) {
+            self.copied_at = None;
+            self.copy.setTitle(&ns("Copy Data"));
+        }
+    }
+
     pub fn show(&self, mtm: MainThreadMarker) {
+        self.window.setAnimationBehavior(super::a11y::animation_behavior());
         activate_app(mtm);
         self.window.makeKeyAndOrderFront(None);
         self.window.orderFrontRegardless();
     }
 
     pub fn update(&mut self, r: &Report) {
+        let heading = crate::stats_data::heading(r);
+        let tables = crate::stats_data::tables(r);
+        self.tsv = crate::stats_data::to_tsv(&heading, &tables);
+        self.html = crate::stats_data::to_html(&heading, &tables);
+        self.table_text.setString(&ns(&crate::stats_data::to_text(&heading, &tables)));
+        self.apply_view();
+
         let days = r.days;
         let change = if r.added_previous == 0 {
             format!("None in the {days} days before")
@@ -211,12 +338,7 @@ impl StatsWindow {
             every_label: every,
         });
 
-        let hour_label = |h: usize| match h {
-            0 => "12 AM".to_string(),
-            12 => "12 PM".to_string(),
-            h if h < 12 => format!("{h} AM"),
-            h => format!("{} PM", h - 12),
-        };
+        let hour_label = crate::stats_data::hour_label;
         let columns = (0..24)
             .map(|h| Column {
                 label: hour_label(h),

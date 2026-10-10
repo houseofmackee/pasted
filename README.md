@@ -15,7 +15,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Optional automatic cleanup on every paste: trim whitespace and remove link tracking parameters (both off by default)
 - Snippet placeholders in pinboard items, expanded when pasting (see below)
 - Rules that expire or pin new copies automatically (see below)
-- Statistics window: items added per day and by time of day, types, top apps, most pasted items and devices, over 7, 30 or 90 days, for all devices or one, in light and dark mode
+- Statistics window: items added per day and by time of day, types, top apps, most pasted items and devices, over 7, 30 or 90 days, for all devices or one, in light and dark mode; a Table view and Copy Data give the exact numbers for a spreadsheet
 - Export to a restorable ZIP backup, JSON or CSV
 - Optional read-only access for AI tools such as Claude and Cursor through a local MCP server (off by default)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order, oldest or newest first
@@ -116,7 +116,8 @@ pasted export backup.zip         # also .json or .csv; --board and --query filte
 pasted import archive backup.zip # restore a backup
 pasted encryption [status|enable|disable]
 pasted mcp                        # read-only MCP server for AI tools (see below)
-pasted stats [--days 30]          # summary with a per-device breakdown; --device NAME limits it, --show opens the window
+pasted stats [--days 30]          # summary with a per-device breakdown; --device NAME limits it, --show opens the window,
+                                  # --tsv prints every chart's values as tab-separated tables
 pasted paths
 ```
 

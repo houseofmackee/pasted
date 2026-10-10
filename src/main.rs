@@ -23,6 +23,7 @@ mod settings;
 mod shortcut;
 mod snippet;
 mod stack;
+mod stats_data;
 mod store;
 mod transform;
 mod ui;
