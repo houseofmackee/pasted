@@ -293,6 +293,7 @@ Excluded apps and rules live in the Core Data store or preferences depending on 
 - **License**: open source, dual licensed MIT OR Apache-2.0 (Rust ecosystem convention). Not a paid product.
 - **Deferred: bundle identifier and signing team.** `io.pasted.app` stays a placeholder until a real Apple Developer team exists. Revisit before Phase 6 notarization.
 - **Distribution: direct-download DMG, Apple silicon only.** No universal binary, no Mac App Store.
+- **Signing: self-signed release certificate.** Until a Developer ID exists, releases are signed with "Pasted Release Signing" (self-signed, valid to 2046, SHA-1 D1:09:9B:0B:0D:77:63:35:13:58:84:35:83:C6:A0:8F:BB:E7:0D:41), kept only in the maintainer's login keychain. The designated requirement is the bundle id plus this certificate, so Accessibility permission survives updates (ad-hoc builds lost it every time). Keep an encrypted backup of the identity: losing it means every user grants the permission again.
 - **Deferred: notarization and Sparkle updates.** Without notarization, first launch needs right-click > Open (or System Settings > Privacy & Security > Open Anyway); document this next to the download.
 - **Performance: no further tuning planned.** Current speed is good for day-to-day use (searches 0.1 to 10 ms and the statistics report about 0.55 s, both at 100k items).
 - **Deferred: iCloud sync.** Phase 7 is on hold. Revisit later, including whether a folder-based sync (iCloud Drive/Dropbox) should come before CloudKit.

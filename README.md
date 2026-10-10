@@ -30,13 +30,15 @@ Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), c
 
 Pasted is not notarized yet, so macOS blocks the first launch. Open it once, click Done, then click **Open Anyway** in System Settings > Privacy & Security. If that button does not appear, run `xattr -dr com.apple.quarantine /Applications/Pasted.app`. The DMG includes these steps in "Read Me First.txt".
 
+Releases from 0.2.1 on are signed with the project's self-signed "Pasted Release Signing" certificate (SHA-1 `D1:09:9B:0B:0D:77:63:35:13:58:84:35:83:C6:A0:8F:BB:E7:0D:41`), so the Accessibility permission carries over to new versions. Check a download with `codesign -dr - /Applications/Pasted.app`, which should show `certificate root = H"d1099b0b0d7763351358843583c6a08fbbe70d41"`. Coming from 0.2.0 or earlier, grant the permission once more after updating.
+
 ## Build and run
 
 Requires an Apple silicon Mac with macOS 14 or later and a Rust toolchain.
 
 ```sh
 cargo run --release            # run from the terminal
-scripts/bundle.sh              # build and ad-hoc sign dist/Pasted.app
+scripts/bundle.sh              # build and sign dist/Pasted.app (release certificate if present, else ad hoc)
 scripts/make_dmg.sh            # build dist/Pasted-<version>-arm64.dmg and its .sha256, then mount and check it
 scripts/make_icon.sh           # rebuild macos/AppIcon.icns after editing macos/AppIcon.svg (needs librsvg)
 open dist/Pasted.app

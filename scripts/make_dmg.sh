@@ -22,6 +22,9 @@ if [ "$ARCHS" != "arm64" ]; then
     exit 1
 fi
 codesign --verify --strict "$APP"
+if codesign -dv "$APP" 2>&1 | grep -q "Signature=adhoc"; then
+    echo "warning: $APP is signed ad hoc; users will have to grant Accessibility permission again" >&2
+fi
 
 VERSION=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
 DMG="dist/Pasted-$VERSION-arm64.dmg"
