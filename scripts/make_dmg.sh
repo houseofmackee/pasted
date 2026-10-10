@@ -64,14 +64,18 @@ fi
 
 # Check what a user will get: the image is intact and the app inside is
 # complete, signed and Apple silicon.
-hdiutil verify -quiet "$DMG"
+# hdiutil can fail with "resource busy" right after creating an image, and
+# -quiet hides why; retry, and run the last attempt without -quiet.
+retry() {
+    for attempt in 1 2; do
+        hdiutil "$@" -quiet 2>/dev/null && return 0
+        sleep 2
+    done
+    hdiutil "$@" || { echo "error: hdiutil $1 failed for $DMG" >&2; exit 1; }
+}
+retry verify "$DMG"
 mkdir -p "$WORK/mnt"
-# Attaching right after creating can fail with "resource busy"; retry.
-for attempt in 1 2 3; do
-    hdiutil attach -quiet -nobrowse -readonly -mountpoint "$WORK/mnt" "$DMG" && break
-    [ "$attempt" = 3 ] && { echo "error: could not mount $DMG" >&2; exit 1; }
-    sleep 2
-done
+retry attach -nobrowse -readonly -mountpoint "$WORK/mnt" "$DMG"
 codesign --verify --strict "$WORK/mnt/Pasted.app"
 [ "$(lipo -archs "$WORK/mnt/Pasted.app/Contents/MacOS/pasted")" = "arm64" ]
 [ -L "$WORK/mnt/Applications" ]
