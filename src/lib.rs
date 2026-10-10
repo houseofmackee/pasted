@@ -25,6 +25,7 @@ pub mod search;
 pub mod settings;
 pub mod shortcut;
 pub mod snippet;
+pub mod sounds;
 pub mod stack;
 pub mod stats_data;
 pub mod store;

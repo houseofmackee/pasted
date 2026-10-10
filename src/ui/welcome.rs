@@ -52,7 +52,7 @@ impl Welcome {
         add(&mut views, text("Welcome to Pasted", 22.0, true), PAD, inner, 28.0, &mut y, 4.0);
         add(
             &mut views,
-            body("To see this again later, choose Welcome\u{2026} from the menu bar icon."),
+            body("To see this again, right-click the menu bar icon and choose Welcome\u{2026}"),
             PAD,
             inner,
             18.0,

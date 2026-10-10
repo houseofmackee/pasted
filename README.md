@@ -6,7 +6,8 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 
 ## Features
 
-- Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V)
+- Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V, or click the menu bar icon; right-click or Control-click the icon for its menu)
+- Click sounds when copying and pasting (on by default; Settings > General)
 - Text, rich text, links, images, files, colors and code, each with its own card; rich text keeps its formatting (from RTF, or HTML through a built-in converter that never loads remote content)
 - Instant search, with close matches for typos and abbreviations ("quartely", "gthb") after exact ones, and filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
@@ -43,7 +44,7 @@ open dist/Pasted.app
 
 Pasting directly into other apps needs Accessibility permission (System Settings > Privacy & Security > Accessibility). Grant it to `Pasted.app`; when running through `cargo run`, the permission applies to your terminal instead. Without it, choosing an item still puts it on the clipboard so you can press ⌘V yourself.
 
-On first launch a welcome window shows the shortcut, the permission status (updated live, with a button that opens the right System Settings pane) and, when Paste is installed, the import. Open it again with **Welcome…** in the menu bar menu.
+On first launch a welcome window shows the shortcut, the permission status (updated live, with a button that opens the right System Settings pane) and, when Paste is installed, the import. Open it again with **Welcome…** in the menu bar icon's menu.
 
 VoiceOver reads each card as one button (type, source app, age, content and position; sensitive items are never read out) and announces search results and selection changes. Pasted also follows the system Reduce Motion and Increase Contrast settings.
 
@@ -133,7 +134,7 @@ Use `--json` with `list` and `search` for machine readable output.
 
 ## Importing from Paste
 
-Choose **Import from Paste…** in the menu bar menu, or run `pasted import paste`. The welcome window shown on first launch also offers it.
+Choose **Import from Paste…** in the menu bar icon's menu, or run `pasted import paste`. The welcome window shown on first launch also offers it.
 
 Link previews Paste already stored (titles, images, icons) come along, so those links are not fetched again.
 
@@ -191,9 +192,9 @@ Limit an export with `--board NAME` or `--query "type:link after:2026-09-01"`. R
 
 ## Settings
 
-Choose **Settings…** in the menu bar menu or press ⌘, in the shelf. The window has four tabs:
+Choose **Settings…** in the menu bar icon's menu or press ⌘, in the shelf. The window has four tabs:
 
-- **General**: history retention, size limit, sounds, launch at login, link previews
+- **General**: history retention, size limit, shelf search and tabs alignment, sounds, launch at login, link previews
 - **Pasting**: direct pasting, plain text default, automatic cleanup, Accessibility status
 - **Shortcuts**: click a field and press a new combination (global shortcuts are paused while recording)
 - **Privacy**: confidential content, secret detection, screen sharing visibility, apps to ignore, ignore patterns
@@ -207,11 +208,12 @@ history_retention = "month"     # day, week, month, year, forever
 max_item_size_mb = 64
 paste_plain_text_by_default = false
 paste_directly = true
-sounds = false
+sounds = true
 launch_at_login = false
 link_previews = true
 fuzzy_search = true             # close matches after exact ones
 paste_stack_order = "oldest_first"   # or "newest_first"
+shelf_bar_alignment = "left"    # shelf search and tabs: "left", "center" or "right"
 
 [shortcuts]
 open_shelf = "shift+cmd+v"

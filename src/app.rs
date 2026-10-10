@@ -17,10 +17,10 @@ use objc2::runtime::{AnyObject, ProtocolObject, Sel};
 use objc2::{AnyThread, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy, NSButton, NSControl,
-    NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSImage, NSMenu,
-    NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardItem, NSResponder, NSRunningApplication,
-    NSSavePanel, NSSearchFieldDelegate, NSSound, NSStatusBar, NSStatusItem, NSTextFieldDelegate, NSTextView,
-    NSWindowDelegate, NSWorkspace,
+    NSControlStateValueOn, NSControlTextEditingDelegate, NSEvent, NSEventMask, NSEventModifierFlags, NSEventType,
+    NSImage, NSMenu, NSMenuItem, NSModalResponseOK, NSOpenPanel, NSPasteboard, NSPasteboardItem, NSResponder,
+    NSRunningApplication, NSSavePanel, NSSearchFieldDelegate, NSStatusBar, NSStatusItem, NSTextFieldDelegate,
+    NSTextView, NSWindowDelegate, NSWorkspace,
 };
 use objc2_foundation::{
     MainThreadMarker, NSArray, NSBundle, NSData, NSDistributedNotificationCenter, NSNotification, NSNumber, NSObject,
@@ -34,6 +34,7 @@ use crate::hotkeys::{HotkeyAction, Hotkeys};
 use crate::import::paste_app::{self, ImportOptions};
 use crate::model::{IMAGE_UTIS, ItemKind, now_ms};
 use crate::settings::Settings;
+use crate::sounds::Sound;
 use crate::store::Store;
 use crate::ui::preview::Preview;
 use crate::ui::settings_window::{self, SettingsWindow};
@@ -169,9 +170,25 @@ define_class!(
             }
         }
 
+        #[unsafe(method(statusItemClicked:))]
+        fn status_item_clicked(&self, _sender: Option<&AnyObject>) {
+            status_item_clicked();
+        }
+
+        #[unsafe(method(showStatusMenu:))]
+        fn show_status_menu(&self, _obj: Option<&AnyObject>) {
+            show_status_menu();
+        }
+
         #[unsafe(method(postPaste:))]
         fn post_paste(&self, _obj: Option<&AnyObject>) {
-            crate::paste::post_cmd_v();
+            with(|app| {
+                if crate::paste::post_cmd_v() {
+                    // The Cmd+V listener sees this keystroke too; it is ours.
+                    app.own_paste_at = Some(Instant::now());
+                    app.play(Sound::Paste);
+                }
+            });
         }
     }
 
@@ -225,6 +242,9 @@ struct PendingSnippet {
 }
 
 /// Paste Stack: copies are queued and each Cmd+V pastes the next one.
+/// How long after Pasted sends Cmd+V itself the listener ignores Cmd+V.
+const OWN_PASTE_WINDOW: Duration = Duration::from_millis(400);
+
 struct PasteStack {
     queue: crate::stack::StackQueue,
     /// Global key monitor that notices Cmd+V in other apps.
@@ -245,6 +265,13 @@ pub struct App {
     paused: bool,
     device: Option<String>,
     status_item: Retained<NSStatusItem>,
+    /// Shown on right-click; a left click opens the shelf.
+    status_menu: Retained<NSMenu>,
+    /// Notices Cmd+V in other apps for the paste click (only while sounds
+    /// are on and Accessibility is allowed).
+    paste_listener: Option<Retained<AnyObject>>,
+    /// When Pasted last sent Cmd+V itself.
+    own_paste_at: Option<Instant>,
     hotkeys: Hotkeys,
     shelf: Shelf,
     preview: Preview,
@@ -372,6 +399,14 @@ pub fn run() -> Result<()> {
         } else {
             button.setTitle(&ns("Pasted"));
         }
+        // Clicks come to us instead of opening a menu, so left and right
+        // clicks can do different things.
+        connect_status_button(&button, &target);
+        add_show_menu_action(&button);
+        objc2_app_kit::NSAccessibility::setAccessibilityHelp(
+            &*button,
+            Some(&ns("Opens Pasted. Right-click or Control-click for more options.")),
+        );
     }
 
     let pb = pasteboard::general();
@@ -405,6 +440,9 @@ pub fn run() -> Result<()> {
         store,
         settings,
         status_item,
+        status_menu: NSMenu::new(mtm),
+        paste_listener: None,
+        own_paste_at: None,
         shelf,
         target,
     };
@@ -560,6 +598,8 @@ impl App {
         self.filter = PrivacyFilter::new(&self.settings.privacy);
         self.shelf.set_visible_in_screen_sharing(self.settings.privacy.visible_during_screen_sharing);
         self.shelf.fuzzy = self.settings.general.fuzzy_search;
+        self.shelf.bar_alignment = self.settings.general.shelf_bar_alignment;
+        self.shelf.layout_bar();
         let s = &self.settings.shortcuts;
         let failed =
             self.hotkeys.set(&[(HotkeyAction::OpenShelf, s.open_shelf), (HotkeyAction::PasteStack, s.paste_stack)]);
@@ -725,7 +765,7 @@ impl App {
         win.set_info(&stats, &paste);
     }
 
-    fn rebuild_status_menu(&self) {
+    fn rebuild_status_menu(&mut self) {
         let mtm = self.mtm;
         let menu = NSMenu::new(mtm);
         let t: &AnyObject = &self.target;
@@ -753,7 +793,7 @@ impl App {
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("About Pasted", ABOUT);
         add("Quit Pasted", QUIT);
-        self.status_item.setMenu(Some(&menu));
+        self.status_menu = menu;
     }
 
     fn poll_clipboard(&mut self) {
@@ -776,11 +816,7 @@ impl App {
                     tracing::debug!("captured {:?} item {inserted:?}", item.kind);
                     self.apply_rules(inserted.id(), &item);
                     self.push_stack(inserted.id());
-                    if self.settings.general.sounds
-                        && let Some(s) = NSSound::soundNamed(&ns("Tink"))
-                    {
-                        s.play();
-                    }
+                    self.play(Sound::Copy);
                     if self.shelf.is_visible() && self.shelf.board.is_none() {
                         self.shelf.reload(&self.store);
                     }
@@ -796,6 +832,7 @@ impl App {
                     }
                     tracing::info!("kept sensitive item {id} ({reason:?}) for {}", crate::rules::format_duration(ms));
                     self.push_stack(id);
+                    self.play(Sound::Copy);
                     if self.shelf.is_visible() && self.shelf.board.is_none() {
                         self.shelf.reload(&self.store);
                     }
@@ -998,8 +1035,52 @@ impl App {
         let _ = self.store.mark_used(id);
     }
 
+    /// Adds or removes the Cmd+V listener to match the settings and the
+    /// Accessibility permission (global key monitors need it).
+    fn update_paste_listener(&mut self) {
+        let wanted = self.settings.general.sounds && crate::paste::is_trusted();
+        if wanted == self.paste_listener.is_some() {
+            return;
+        }
+        if let Some(m) = self.paste_listener.take() {
+            // SAFETY: `m` was returned by addGlobalMonitorForEventsMatchingMask.
+            unsafe { NSEvent::removeMonitor(&m) };
+            return;
+        }
+        let handler = RcBlock::new(|event: std::ptr::NonNull<NSEvent>| {
+            // SAFETY: AppKit passes a valid event for the duration of the call.
+            let event = unsafe { event.as_ref() };
+            // Only Cmd+V (with or without Shift or Option, as in Paste and
+            // Match Style); nothing else is looked at or kept.
+            let flags = event.modifierFlags();
+            if event.keyCode() != 9
+                || !flags.contains(NSEventModifierFlags::Command)
+                || flags.contains(NSEventModifierFlags::Control)
+                || event.isARepeat()
+            {
+                return;
+            }
+            with(|app| {
+                if app.own_paste_at.is_none_or(|t| t.elapsed() > OWN_PASTE_WINDOW) {
+                    app.play(Sound::Paste);
+                }
+            });
+        });
+        self.paste_listener = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(NSEventMask::KeyDown, &handler);
+    }
+
+    fn play(&self, sound: Sound) {
+        if self.settings.general.sounds {
+            crate::sounds::play(sound);
+        }
+    }
+
     /// Presses Cmd+V in the app that was active before the shelf opened.
     fn finish_paste(&mut self) {
+        if !self.settings.general.paste_directly || !crate::paste::is_trusted() {
+            // Only copied; the user presses Cmd+V.
+            self.play(Sound::Copy);
+        }
         if !self.settings.general.paste_directly {
             return;
         }
@@ -1224,6 +1305,7 @@ fn tick() {
         app.check_settings_file();
         app.expire_items();
         app.refresh_welcome();
+        app.update_paste_listener();
         if let Some(win) = &mut app.stats_window {
             win.tick();
         }
@@ -1703,6 +1785,85 @@ pub fn card_drag_item(index: usize) -> Option<Retained<NSPasteboardItem>> {
         Some(item)
     })
     .flatten()
+}
+
+/// Left click opens (or closes) the shelf; right-click or Control-click
+/// shows the menu.
+fn status_item_clicked() {
+    let mtm = mtm();
+    // Only a click that just happened counts: an Accessibility press (for
+    // example from VoiceOver) leaves an older event as the current one.
+    let now = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+    let wants_menu = NSApplication::sharedApplication(mtm).currentEvent().is_some_and(|e| {
+        now - e.timestamp() < 1.0
+            && (e.r#type() == NSEventType::RightMouseUp || e.modifierFlags().contains(NSEventModifierFlags::Control))
+    });
+    if !wants_menu {
+        with(|app| app.open_shelf());
+        return;
+    }
+    show_status_menu();
+}
+
+/// The menu bar icon's menu, under the icon.
+fn show_status_menu() {
+    let mtm = mtm();
+    // Not borrowed while the menu is open: choosing an item runs its action
+    // before the menu returns.
+    let Some((item, menu)) = with(|app| {
+        app.close_shelf();
+        (app.status_item.clone(), app.status_menu.clone())
+    }) else {
+        return;
+    };
+    let Some(button) = item.button(mtm) else { return };
+    // Popped up under the icon rather than attached to the status item, so
+    // the button keeps sending clicks to us.
+    // Same look as a system menu bar menu: the system appearance, not the
+    // menu bar's (which follows the wallpaper).
+    objc2_app_kit::NSAppearanceCustomization::setAppearance(
+        &*menu,
+        Some(&NSApplication::sharedApplication(mtm).effectiveAppearance()),
+    );
+    button.highlight(true);
+    let below = objc2_foundation::NSPoint::new(0.0, button.bounds().size.height + 5.0);
+    menu.popUpMenuPositioningItem_atLocation_inView(None, below, Some(&button));
+    button.highlight(false);
+}
+
+/// VoiceOver's "show menu" (VO-Shift-M) on the menu bar icon opens the
+/// same menu as a right-click. The system's status bar button cannot be
+/// subclassed, so the method is added to its class.
+fn add_show_menu_action(button: &objc2_app_kit::NSStatusBarButton) {
+    extern "C-unwind" fn perform_show_menu(_this: &AnyObject, _cmd: Sel) -> objc2::runtime::Bool {
+        // Later: the menu runs its own event loop, which would hold up
+        // the Accessibility request until it closes.
+        if let Some(target) = with(|app| app.target.clone()) {
+            // SAFETY: the target implements `showStatusMenu:`.
+            unsafe {
+                let _: () = msg_send![&*target, performSelector: sel!(showStatusMenu:), withObject: None::<&AnyObject>, afterDelay: 0.0f64];
+            }
+        }
+        objc2::runtime::Bool::YES
+    }
+    // SAFETY: the function matches the selector's signature
+    // (`- (BOOL)accessibilityPerformShowMenu`, encoded "B@:").
+    unsafe {
+        let class = objc2::ffi::object_getClass((button as *const objc2_app_kit::NSStatusBarButton).cast());
+        let imp: objc2::runtime::Imp =
+            std::mem::transmute(perform_show_menu as extern "C-unwind" fn(&AnyObject, Sel) -> objc2::runtime::Bool);
+        objc2::ffi::class_addMethod(class.cast_mut(), sel!(accessibilityPerformShowMenu), imp, c"B@:".as_ptr());
+    }
+}
+
+/// Sends left and right clicks on the menu bar icon to `statusItemClicked:`.
+fn connect_status_button(button: &objc2_app_kit::NSStatusBarButton, target: &Target) {
+    // SAFETY: the target implements `statusItemClicked:` and lives as long as the app.
+    unsafe {
+        button.setTarget(Some(target));
+        button.setAction(Some(sel!(statusItemClicked:)));
+    }
+    button.sendActionOn(NSEventMask::LeftMouseUp | NSEventMask::RightMouseUp);
 }
 
 fn dispatch(raw_tag: isize) {

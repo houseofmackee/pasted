@@ -49,6 +49,7 @@ pub struct General {
     pub paste_plain_text_by_default: bool,
     /// Simulate Cmd+V after choosing an item (needs Accessibility permission).
     pub paste_directly: bool,
+    /// Click sounds when something is copied and when Pasted pastes.
     pub sounds: bool,
     pub launch_at_login: bool,
     /// Fetch page titles and images for copied links (the only network access).
@@ -57,6 +58,30 @@ pub struct General {
     pub fuzzy_search: bool,
     /// Which queued copy Paste Stack pastes first.
     pub paste_stack_order: crate::stack::StackOrder,
+    /// Where the shelf's search field and pinboard tabs sit.
+    pub shelf_bar_alignment: BarAlignment,
+}
+
+/// Placement of the shelf's search field and pinboard tabs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BarAlignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+impl BarAlignment {
+    pub const ALL: [BarAlignment; 3] = [BarAlignment::Left, BarAlignment::Center, BarAlignment::Right];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BarAlignment::Left => "Left",
+            BarAlignment::Center => "Centered",
+            BarAlignment::Right => "Right",
+        }
+    }
 }
 
 impl Default for General {
@@ -66,11 +91,12 @@ impl Default for General {
             max_item_size_mb: 64,
             paste_plain_text_by_default: false,
             paste_directly: true,
-            sounds: false,
+            sounds: true,
             launch_at_login: false,
             link_previews: true,
             fuzzy_search: true,
             paste_stack_order: crate::stack::StackOrder::OldestFirst,
+            shelf_bar_alignment: BarAlignment::Left,
         }
     }
 }
@@ -236,6 +262,14 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shelf_bar_alignment_is_saved_by_name() {
+        let s: Settings = toml::from_str("[general]\nshelf_bar_alignment = \"center\"\n").unwrap();
+        assert_eq!(s.general.shelf_bar_alignment, BarAlignment::Center);
+        assert_eq!(Settings::default().general.shelf_bar_alignment, BarAlignment::Left);
+        assert!(toml::to_string(&s).unwrap().contains("shelf_bar_alignment = \"center\""));
+    }
 
     #[test]
     fn defaults_round_trip() {

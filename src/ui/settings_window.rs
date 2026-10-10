@@ -274,6 +274,7 @@ pub struct SettingsWindow {
     clean_links: Retained<NSButton>,
     expand_placeholders: Retained<NSButton>,
     stack_order: Retained<NSPopUpButton>,
+    bar_alignment: Retained<NSPopUpButton>,
     accessibility: Retained<NSTextField>,
     login_note: Retained<NSTextField>,
     open_shelf: Retained<ShortcutRecorder>,
@@ -419,9 +420,14 @@ impl SettingsWindow {
         let y = f.row("Skip copies larger than:", 26.0);
         max_size.setFrame(rect(CONTROL_X, y, 160.0, 26.0));
         f.add(&max_size);
+        let labels: Vec<String> = crate::settings::BarAlignment::ALL.iter().map(|a| a.label().to_string()).collect();
+        let bar_alignment = popup(&labels, target, mtm);
+        let y = f.row("Shelf search and tabs:", 26.0);
+        bar_alignment.setFrame(rect(CONTROL_X, y, 160.0, 26.0));
+        f.add(&bar_alignment);
         let mut boxes = Vec::new();
         for (i, title) in [
-            "Play a sound when something is copied",
+            "Play click sounds when copying and pasting",
             "Launch Pasted at login",
             "Show link previews (fetches page titles and images)",
             "Search also shows close matches (typos, abbreviations)",
@@ -805,6 +811,7 @@ impl SettingsWindow {
             clean_links,
             expand_placeholders,
             stack_order,
+            bar_alignment,
             accessibility,
             login_note,
             open_shelf,
@@ -871,6 +878,8 @@ impl SettingsWindow {
         set_checked(&self.trim_whitespace, s.pasting.trim_whitespace);
         set_checked(&self.clean_links, s.pasting.clean_links);
         set_checked(&self.expand_placeholders, s.pasting.expand_placeholders);
+        let align = crate::settings::BarAlignment::ALL.iter().position(|a| *a == g.shelf_bar_alignment).unwrap_or(0);
+        self.bar_alignment.selectItemAtIndex(align as isize);
         self.stack_order.selectItemAtIndex(match g.paste_stack_order {
             crate::stack::StackOrder::OldestFirst => 0,
             crate::stack::StackOrder::NewestFirst => 1,
@@ -950,6 +959,10 @@ impl SettingsWindow {
         s.pasting.trim_whitespace = checked(&self.trim_whitespace);
         s.pasting.clean_links = checked(&self.clean_links);
         s.pasting.expand_placeholders = checked(&self.expand_placeholders);
+        s.general.shelf_bar_alignment = crate::settings::BarAlignment::ALL
+            .get(self.bar_alignment.indexOfSelectedItem().max(0) as usize)
+            .copied()
+            .unwrap_or_default();
         s.general.paste_stack_order = if self.stack_order.indexOfSelectedItem() == 1 {
             crate::stack::StackOrder::NewestFirst
         } else {

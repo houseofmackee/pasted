@@ -55,6 +55,28 @@ define_class!(
     unsafe impl NSObjectProtocol for ShelfPanel {}
 );
 
+const SEARCH_W: f64 = 260.0;
+const BAR_GAP: f64 = 16.0;
+const BAR_EDGE: f64 = 16.0;
+/// Room kept for the item count.
+const COUNT_W: f64 = 130.0;
+
+/// Where the search field starts and whether the item count moves to the
+/// left edge (so it never sits under right-aligned tabs).
+pub fn bar_layout(panel_w: f64, tabs_w: f64, alignment: crate::settings::BarAlignment) -> (f64, bool) {
+    use crate::settings::BarAlignment;
+    let group = SEARCH_W + BAR_GAP + tabs_w;
+    match alignment {
+        BarAlignment::Left => (BAR_EDGE, false),
+        // Centered on the panel, but never under the count on the right.
+        BarAlignment::Center => {
+            (((panel_w - group) / 2.0).min(panel_w - BAR_EDGE - COUNT_W - group).max(BAR_EDGE), false)
+        }
+        // Right-aligned, leaving the left edge for the count.
+        BarAlignment::Right => ((panel_w - BAR_EDGE - group).max(BAR_EDGE * 2.0 + COUNT_W), true),
+    }
+}
+
 /// Menu and button tags pack an action code and an argument.
 pub fn tag(code: u8, arg: i64) -> isize {
     ((code as i64) << 40 | (arg & 0xFF_FFFF_FFFF)) as isize
@@ -76,6 +98,10 @@ pub struct Shelf {
     scroll: Retained<NSScrollView>,
     doc: Retained<NSView>,
     count: Retained<NSTextField>,
+    /// Where the search field and tabs sit (from settings).
+    pub bar_alignment: crate::settings::BarAlignment,
+    /// Width of the tab buttons, for aligning the bar.
+    tabs_width: f64,
     cards: Vec<Retained<CardView>>,
     pub items: Vec<Item>,
     pub selected: usize,
@@ -171,6 +197,8 @@ impl Shelf {
             scroll,
             doc,
             count,
+            bar_alignment: Default::default(),
+            tabs_width: 0.0,
             cards: Vec::new(),
             items: Vec::new(),
             selected: 0,
@@ -215,11 +243,25 @@ impl Shelf {
         self.panel.setFrame_display(rect(vf.origin.x + MARGIN, vf.origin.y + MARGIN, w, PANEL_H), true);
         let Some(content) = self.panel.contentView() else { return };
         content.setFrame(rect(0.0, 0.0, w, PANEL_H));
-        let bar_y = PANEL_H - TOP_BAR_H + 11.0;
-        self.search.setFrame(rect(16.0, bar_y, 260.0, 28.0));
-        self.tabs.setFrame(rect(292.0, bar_y, (w - 292.0 - 150.0).max(100.0), 28.0));
-        self.count.setFrame(rect(w - 146.0, bar_y + 5.0, 130.0, 18.0));
         self.scroll.setFrame(rect(0.0, 0.0, w, PANEL_H - TOP_BAR_H));
+        self.layout_bar();
+    }
+
+    /// Places the search field and tabs (as one group) and the item count.
+    pub fn layout_bar(&self) {
+        let w = self.panel.frame().size.width;
+        let bar_y = PANEL_H - TOP_BAR_H + 11.0;
+        let (x, count_left) = bar_layout(w, self.tabs_width, self.bar_alignment);
+        let tabs_w = self.tabs_width.min(w - BAR_EDGE * 2.0 - COUNT_W - SEARCH_W - BAR_GAP).max(100.0);
+        self.search.setFrame(rect(x, bar_y, SEARCH_W, 28.0));
+        self.tabs.setFrame(rect(x + SEARCH_W + BAR_GAP, bar_y, tabs_w, 28.0));
+        let (count_x, align) = if count_left {
+            (BAR_EDGE, objc2_app_kit::NSTextAlignment::Left)
+        } else {
+            (w - BAR_EDGE - COUNT_W, objc2_app_kit::NSTextAlignment::Right)
+        };
+        self.count.setFrame(rect(count_x, bar_y + 5.0, COUNT_W, 18.0));
+        self.count.setAlignment(align);
     }
 
     pub fn show(&mut self, store: &Store) {
@@ -263,6 +305,7 @@ impl Shelf {
             v.removeFromSuperview();
         }
         let mut x = 0.0;
+        let mut tabs_width = 0.0;
         let target: &AnyObject = &self.target;
         let mut add = |title: &str, tag_value: isize, on: bool, color: Option<u32>, menu: Option<Retained<NSMenu>>| {
             // SAFETY: the target object implements `tabClicked:`.
@@ -299,6 +342,7 @@ impl Shelf {
             b.setFrame(rect(x, 0.0, width, TAB_H));
             x += width + 6.0;
             self.tabs.addSubview(&b);
+            tabs_width = x - 6.0;
         };
         add("Clipboard", tag(TAB_SELECT, -1), self.board.is_none(), None, None);
         for p in &self.boards {
@@ -306,6 +350,8 @@ impl Shelf {
             add(&p.name, tag(TAB_SELECT, p.id), self.board == Some(p.id), Some(p.color), Some(menu));
         }
         add("+ New", tag(TAB_NEW, 0), false, None, None);
+        self.tabs_width = tabs_width;
+        self.layout_bar();
     }
 
     pub fn select_board(&mut self, board: Option<i64>, store: &Store) {
@@ -612,6 +658,22 @@ pub fn menu_item(title: &str, tag_value: isize, target: &AnyObject, mtm: MainThr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::settings::BarAlignment;
+
+    #[test]
+    fn bar_alignment_positions() {
+        let group = SEARCH_W + BAR_GAP + 300.0;
+        // Wide panel: left edge, middle, right edge.
+        assert_eq!(bar_layout(1600.0, 300.0, BarAlignment::Left), (BAR_EDGE, false));
+        assert_eq!(bar_layout(1600.0, 300.0, BarAlignment::Center), ((1600.0 - group) / 2.0, false));
+        assert_eq!(bar_layout(1600.0, 300.0, BarAlignment::Right), (1600.0 - BAR_EDGE - group, true));
+        // Many tabs: centering never puts the tabs under the count.
+        let (x, _) = bar_layout(1000.0, 500.0, BarAlignment::Center);
+        assert!(x + SEARCH_W + BAR_GAP + 500.0 <= 1000.0 - BAR_EDGE - COUNT_W, "{x}");
+        // Too narrow to fit: start at the edge (right alignment leaves room for the count).
+        assert_eq!(bar_layout(600.0, 900.0, BarAlignment::Center).0, BAR_EDGE);
+        assert_eq!(bar_layout(600.0, 900.0, BarAlignment::Right).0, BAR_EDGE * 2.0 + COUNT_W);
+    }
 
     #[test]
     fn tags_round_trip() {
