@@ -437,7 +437,7 @@ impl SettingsWindow {
         {
             let b = checkbox(title, target, mtm);
             let y = f.row(if i == 0 { "General:" } else { "" }, 20.0);
-            b.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 60.0, 20.0));
+            b.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 40.0, 20.0));
             f.add(&b);
             boxes.push(b);
         }
