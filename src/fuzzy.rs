@@ -75,11 +75,18 @@ impl FuzzyQuery {
         }
         let max = if word.len() >= 8 { 2 } else { 1 };
         haystack.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).any(|w| {
-            let candidate = normalize(w);
-            // Typos rarely change both of the first two letters; this keeps
-            // the comparison count small.
-            let plausible = candidate.first() == word.first() || candidate.get(1) == word.first();
-            plausible && edit_distance(word, &candidate, max).is_some()
+            // Cheap checks first, without allocating: the length must be
+            // within reach, and typos rarely change both of the first two
+            // letters.
+            if w.chars().count().abs_diff(word.len()) > max {
+                return false;
+            }
+            let mut start = w.chars().flat_map(char::to_lowercase).map(nucleo_matcher::chars::normalize);
+            let (c0, c1) = (start.next(), start.next());
+            if c0 != word.first().copied() && c1 != word.first().copied() {
+                return false;
+            }
+            edit_distance(word, &normalize(w), max).is_some()
         })
     }
 
@@ -183,6 +190,15 @@ mod tests {
     fn every_word_must_match_and_accents_fold() {
         assert!(!matches("roadmap budget", "Quarterly roadmap review"));
         assert!(matches("cafe", "Meet at Café Lumière"));
+        assert!(matches("lumiere", "Meet at Café Lumière"), "accented words reach the typo check");
+    }
+
+    #[test]
+    fn typo_check_counts_characters_not_bytes() {
+        let typo = |q: &str, h: &str| FuzzyQuery::typo_match(&normalize(q), h);
+        assert!(typo("東京タワ展望台", "週末 東京タワー展望台 へ"), "one missing character");
+        assert!(typo("lumeire", "Café Lumière"));
+        assert!(!typo("roadmap", "a very long unrelated word: roadmapping-and-planning"));
     }
 
     #[test]

@@ -191,6 +191,8 @@ fn search_store() -> Store {
 fn search(c: &mut Criterion) {
     let store = search_store();
     let queries = [
+        ("open shelf (no query)", ""),
+        ("filter only", "app:Slack"),
         ("common word", "roadmap"),
         ("two words", "quarterly review"),
         ("rare match", "INV- 4242"),

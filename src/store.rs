@@ -121,7 +121,41 @@ ALTER TABLE items ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0;
 "#,
     ),
     Migration::Rust(Store::drop_redundant_utf16),
+    // Lets search walk recent history in order without reading item text.
+    Migration::Sql(
+        "CREATE INDEX IF NOT EXISTS items_recent ON items(in_history, timestamp DESC, expires_at, kind, app_id);",
+    ),
 ];
+
+/// With more full text matches than this, search walks recent history in
+/// order and stops after a page, instead of looking up and sorting every
+/// match.
+const MANY_MATCHES: usize = 2_000;
+
+/// The newest history item with a checksum. Pinned to the checksum index:
+/// without table statistics SQLite may walk all of history through
+/// `items_recent` instead, on every capture.
+const DEDUPE_SQL: &str = "SELECT id FROM items INDEXED BY items_checksum
+     WHERE checksum = ?1 AND in_history = 1 ORDER BY timestamp DESC LIMIT 1";
+
+/// How the text part of a search is applied.
+enum TextClause<'a> {
+    /// Full text search inside the SQL query.
+    Fts,
+    /// Only these items (already matched).
+    Ids(&'a [i64]),
+    /// No text condition; the caller checks matches itself.
+    Skip,
+}
+
+/// How a search is run, decided from the number of full text matches.
+enum Plan {
+    /// No full text terms, or a pinboard search: one SQL query.
+    Sql,
+    Nothing,
+    Few(Vec<i64>),
+    Many(HashSet<i64>),
+}
 
 /// Failed link previews are retried after this long.
 const PREVIEW_RETRY_MS: i64 = 7 * 24 * 60 * 60 * 1000;
@@ -233,6 +267,23 @@ pub fn checksum(reps: &[Representation]) -> String {
         h.update(&r.data);
     }
     hex(&h.finalize())
+}
+
+/// The FTS match expression for the words that trigram search can handle
+/// (3 or more characters), or `None` when there are none.
+fn fts_expression(text: &str) -> Option<String> {
+    let terms: Vec<String> = text
+        .split_whitespace()
+        .filter(|w| w.chars().count() >= 3)
+        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .collect();
+    (!terms.is_empty()).then(|| terms.join(" AND "))
+}
+
+/// Ids for an `IN (...)` list. They are integers, so they are safe to
+/// put in the SQL text.
+fn id_list(ids: &[i64]) -> String {
+    ids.iter().map(i64::to_string).collect::<Vec<_>>().join(",")
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -464,14 +515,7 @@ impl Store {
             };
         let sum = checksum(&reps);
         if dedupe {
-            let existing: Option<i64> = self
-                .conn
-                .query_row(
-                    "SELECT id FROM items WHERE checksum = ?1 AND in_history = 1 ORDER BY timestamp DESC LIMIT 1",
-                    [&sum],
-                    |r| r.get(0),
-                )
-                .optional()?;
+            let existing: Option<i64> = self.conn.query_row(DEDUPE_SQL, [&sum], |r| r.get(0)).optional()?;
             if let Some(id) = existing {
                 self.conn.execute(
                     "UPDATE items SET timestamp = max(timestamp, ?2) WHERE id = ?1",
@@ -574,17 +618,105 @@ impl Store {
     /// Exact search: substring matches (trigram FTS, or LIKE for short
     /// words) plus filters, newest first (pinboard order on a board).
     pub fn search(&self, q: &Query, limit: usize, offset: usize) -> Result<Vec<Item>> {
-        let Some((sql, args)) = self.search_sql(q, ITEM_COLUMNS, limit, offset)? else { return Ok(Vec::new()) };
-        let mut stmt = self.conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params_from_iter(args), item_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let text = match self.plan(q)? {
+            Plan::Nothing => return Ok(Vec::new()),
+            Plan::Many(matches) => {
+                let ids = self.scan_recent(q, &matches, limit, offset)?;
+                return self.items_by_ids(&ids);
+            }
+            Plan::Few(ids) => return self.query(q, ITEM_COLUMNS, limit, offset, TextClause::Ids(&ids), item_from_row),
+            Plan::Sql => TextClause::Fts,
+        };
+        self.query(q, ITEM_COLUMNS, limit, offset, text, item_from_row)
     }
 
+    /// Every exact match (no paging).
     fn search_ids(&self, q: &Query) -> Result<HashSet<i64>> {
-        let Some((sql, args)) = self.search_sql(q, "i.id", i64::MAX as usize, 0)? else { return Ok(HashSet::new()) };
+        let ids = match self.plan(q)? {
+            Plan::Nothing => Vec::new(),
+            Plan::Many(matches) => self.scan_recent(q, &matches, usize::MAX, 0)?,
+            Plan::Few(ids) => self.query(q, "i.id", usize::MAX, 0, TextClause::Ids(&ids), |r| r.get(0))?,
+            Plan::Sql => self.query(q, "i.id", usize::MAX, 0, TextClause::Fts, |r| r.get(0))?,
+        };
+        Ok(ids.into_iter().collect())
+    }
+
+    /// Runs the full text part once and picks the cheapest way to finish.
+    fn plan(&self, q: &Query) -> Result<Plan> {
+        let Some(expr) = fts_expression(&q.text) else { return Ok(Plan::Sql) };
+        if q.board_id.is_some() || q.board_name.is_some() {
+            return Ok(Plan::Sql);
+        }
+        let mut stmt = self.conn.prepare_cached("SELECT rowid FROM items_fts WHERE items_fts MATCH ?1")?;
+        let ids: Vec<i64> = stmt.query_map([expr], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        Ok(match ids.len() {
+            0 => Plan::Nothing,
+            n if n <= MANY_MATCHES => Plan::Few(ids),
+            _ => Plan::Many(ids.into_iter().collect()),
+        })
+    }
+
+    fn query<T>(
+        &self,
+        q: &Query,
+        columns: &str,
+        limit: usize,
+        offset: usize,
+        text: TextClause,
+        map: impl FnMut(&Row) -> rusqlite::Result<T>,
+    ) -> Result<Vec<T>> {
+        let cache = !matches!(text, TextClause::Ids(_));
+        let Some((sql, args)) = self.search_sql(q, columns, limit, offset, text)? else { return Ok(Vec::new()) };
+        // An id list makes every statement different, so it is not cached.
+        if cache {
+            let mut stmt = self.conn.prepare_cached(&sql)?;
+            let rows = stmt.query_map(params_from_iter(args), map)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        } else {
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(params_from_iter(args), map)?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        }
+    }
+
+    /// Walks history newest first (through `items_recent`, without reading
+    /// item text) and keeps the items in `matches`, stopping after a page.
+    fn scan_recent(&self, q: &Query, matches: &HashSet<i64>, limit: usize, offset: usize) -> Result<Vec<i64>> {
+        let Some((sql, args)) = self.search_sql(q, "i.id", usize::MAX, 0, TextClause::Skip)? else {
+            return Ok(Vec::new());
+        };
         let mut stmt = self.conn.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params_from_iter(args), |r| r.get(0))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let mut rows = stmt.query(params_from_iter(args))?;
+        let (mut skipped, mut out) = (0, Vec::new());
+        while out.len() < limit
+            && let Some(row) = rows.next()?
+        {
+            let id: i64 = row.get(0)?;
+            if !matches.contains(&id) {
+                continue;
+            }
+            if skipped < offset {
+                skipped += 1;
+            } else {
+                out.push(id);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Items in the order of `ids`.
+    pub fn items_by_ids(&self, ids: &[i64]) -> Result<Vec<Item>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = format!(
+            "SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN apps a ON a.id = i.app_id WHERE i.id IN ({})",
+            id_list(ids)
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let mut found: HashMap<i64, Item> =
+            stmt.query_map([], item_from_row)?.map(|r| r.map(|i| (i.id, i))).collect::<rusqlite::Result<_>>()?;
+        Ok(ids.iter().filter_map(|id| found.remove(id)).collect())
     }
 
     /// Exact results first; when they run out (and `fuzzy` is on), close
@@ -613,26 +745,43 @@ impl Store {
     /// that pass `q`'s filters, best match first, skipping `exclude`.
     pub fn fuzzy_search(&self, q: &Query, exclude: &HashSet<i64>, limit: usize) -> Result<Vec<Item>> {
         const CANDIDATES: usize = 5_000;
-        let Some(mut matcher) = crate::fuzzy::FuzzyQuery::new(&q.text) else { return Ok(Vec::new()) };
-        let filters_only = Query { text: String::new(), ..q.clone() };
-        let mut scored: Vec<(u32, Item)> = Vec::new();
-        for item in self.search(&filters_only, CANDIDATES, 0)? {
-            if exclude.contains(&item.id) || item.sensitive {
-                continue;
-            }
-            let haystack = [
-                item.title.as_deref().unwrap_or(""),
-                item.meta.url_name.as_deref().unwrap_or(""),
-                item.app_name.as_deref().unwrap_or(""),
-                &item.text,
-            ]
-            .join(" ");
-            if let Some(score) = matcher.score(&haystack) {
-                scored.push((score, item));
-            }
+        if crate::fuzzy::FuzzyQuery::new(&q.text).is_none() {
+            return Ok(Vec::new());
         }
-        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.timestamp.cmp(&a.1.timestamp)));
-        Ok(scored.into_iter().take(limit).map(|(_, i)| i).collect())
+        // Only what scoring needs; full items are loaded for the winners.
+        let filters_only = Query { text: String::new(), ..q.clone() };
+        let columns = "i.id, i.timestamp, i.sensitive, \
+             coalesce(i.title, '') || ' ' || coalesce(json_extract(i.meta, '$.url_name'), '') || ' ' || \
+             coalesce(a.name, '') || ' ' || i.text";
+        let candidates: Vec<(i64, i64, String)> = self
+            .query(&filters_only, columns, CANDIDATES, 0, TextClause::Fts, |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get::<_, bool>(2)?, r.get(3)?))
+            })?
+            .into_iter()
+            .filter(|(id, _, sensitive, _)| !sensitive && !exclude.contains(id))
+            .map(|(id, ts, _, haystack)| (id, ts, haystack))
+            .collect();
+
+        // Scoring is independent per item, so it is spread over a few cores.
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, 4);
+        let chunk = candidates.len().div_ceil(threads).max(1);
+        let mut scored: Vec<(u32, i64, i64)> = std::thread::scope(|scope| {
+            let workers: Vec<_> = candidates
+                .chunks(chunk)
+                .map(|part| {
+                    scope.spawn(|| {
+                        let Some(mut matcher) = crate::fuzzy::FuzzyQuery::new(&q.text) else { return Vec::new() };
+                        part.iter()
+                            .filter_map(|(id, ts, haystack)| matcher.score(haystack).map(|s| (s, *ts, *id)))
+                            .collect::<Vec<_>>()
+                    })
+                })
+                .collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap_or_default()).collect()
+        });
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+        let ids: Vec<i64> = scored.into_iter().take(limit).map(|(_, _, id)| id).collect();
+        self.items_by_ids(&ids)
     }
 
     /// Builds the exact-search SQL. `None` when a named pinboard does not exist.
@@ -642,6 +791,7 @@ impl Store {
         columns: &str,
         limit: usize,
         offset: usize,
+        text: TextClause,
     ) -> Result<Option<(String, Vec<Value>)>> {
         let mut clauses: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
@@ -691,19 +841,26 @@ impl Store {
         }
 
         // Trigram FTS needs at least 3 characters per term; shorter terms use LIKE.
-        let mut fts_terms = Vec::new();
-        for word in q.text.split_whitespace() {
-            if word.chars().count() >= 3 {
-                fts_terms.push(format!("\"{}\"", word.replace('"', "\"\"")));
-            } else {
-                clauses.push("(i.text LIKE ? ESCAPE '\\' OR coalesce(i.title, '') LIKE ? ESCAPE '\\')".into());
-                args.push(escape_like(word).into());
-                args.push(escape_like(word).into());
-            }
+        for word in q.text.split_whitespace().filter(|w| w.chars().count() < 3) {
+            clauses.push("(i.text LIKE ? ESCAPE '\\' OR coalesce(i.title, '') LIKE ? ESCAPE '\\')".into());
+            args.push(escape_like(word).into());
+            args.push(escape_like(word).into());
         }
-        if !fts_terms.is_empty() {
-            clauses.push("i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)".into());
-            args.push(fts_terms.join(" AND ").into());
+        let mut source = "items i";
+        match (text, fts_expression(&q.text)) {
+            (TextClause::Fts, Some(expr)) => {
+                clauses.push("i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)".into());
+                args.push(expr.into());
+            }
+            (TextClause::Ids(ids), _) => {
+                clauses.push(format!("i.id IN ({})", id_list(ids)));
+                // Look the few ids up directly; without table statistics
+                // SQLite may otherwise walk an index over all of history.
+                source = "items i NOT INDEXED";
+            }
+            // Walking the compact index in time order is the point of a scan.
+            (TextClause::Skip, _) if board.is_none() => source = "items i INDEXED BY items_recent",
+            _ => {}
         }
 
         let order = match board {
@@ -716,7 +873,7 @@ impl Store {
         args.push((limit.min(i64::MAX as usize) as i64).into());
         args.push((offset as i64).into());
         let sql = format!(
-            "SELECT {columns} FROM items i LEFT JOIN apps a ON a.id = i.app_id
+            "SELECT {columns} FROM {source} LEFT JOIN apps a ON a.id = i.app_id
              WHERE {} ORDER BY {order} LIMIT ? OFFSET ?",
             clauses.join(" AND ")
         );
@@ -1415,7 +1572,9 @@ pub mod tests {
                 .unwrap();
         }
         s.conn.execute("UPDATE items SET checksum = 'old', size_bytes = 99 WHERE id = ?1", [id]).unwrap();
-        s.conn.pragma_update(None, "user_version", MIGRATIONS.len() - 1).unwrap();
+        // Back to just before the UTF-16 migration (migration 5).
+        let utf16 = MIGRATIONS.iter().position(|m| matches!(m, Migration::Rust(_))).unwrap();
+        s.conn.pragma_update(None, "user_version", utf16).unwrap();
         drop(s);
 
         let mut s = Store::open(&dir.path().join("t.db"), dir.path().join("blobs")).unwrap();
@@ -1424,6 +1583,84 @@ pub mod tests {
         assert_eq!(s.get(id).unwrap().unwrap().size_bytes, "Old rich text".len() as i64);
         assert_eq!(s.representations(different).unwrap().len(), 2, "UTF-16 with other text is kept");
         assert_eq!(s.insert(&with_utf16("Old rich text"), true).unwrap(), Inserted::Existing(id));
+    }
+
+    #[test]
+    fn query_plans_use_the_intended_indexes() {
+        let (_dir, mut s) = temp_store();
+        s.batch(|s| {
+            for n in 0..500 {
+                s.insert(&text_item(&format!("item {n}"), n), false)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let plan = |sql: &str| -> String {
+            let mut stmt = s.conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(3)).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap().join("; ")
+        };
+        // Every capture runs the duplicate check; it must not walk history.
+        let dedupe = plan(&DEDUPE_SQL.replace("?1", "'x'"));
+        assert!(dedupe.contains("items_checksum"), "{dedupe}");
+        let q = Query::parse("item");
+        let (sql, _) = s.search_sql(&q, "i.id", 150, 0, TextClause::Ids(&[1, 2, 3])).unwrap().unwrap();
+        let few = plan(&sql.replace('?', "0"));
+        assert!(few.contains("INTEGER PRIMARY KEY"), "{few}");
+        let (sql, _) = s.search_sql(&q, "i.id", 150, 0, TextClause::Skip).unwrap().unwrap();
+        let scan = plan(&sql.replace('?', "0"));
+        assert!(scan.contains("COVERING INDEX items_recent") && !scan.contains("TEMP B-TREE"), "{scan}");
+    }
+
+    #[test]
+    fn search_plans_return_the_same_results() {
+        let (_dir, mut s) = temp_store();
+        let n_items = MANY_MATCHES + 600;
+        s.batch(|s| {
+            for n in 0..n_items {
+                let text = match n % 3 {
+                    0 => format!("https://example.com/roadmap/{n}"),
+                    1 => format!("roadmap note {n} ab"),
+                    _ => format!("roadmap draft {n}"),
+                };
+                // Timestamps shuffled against insertion order, all distinct.
+                let ts = 1_000 + ((n * 7919) % n_items) as i64;
+                let mut item = text_item(&text, ts);
+                if n % 5 == 0 {
+                    item.source_app =
+                        Some(SourceApp { bundle_id: "com.tinyspeck.slackmacgap".into(), name: Some("Slack".into()) });
+                }
+                s.insert(&item, false)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        s.conn.execute("UPDATE items SET in_history = 0 WHERE id % 11 = 0", []).unwrap();
+        s.conn.execute("UPDATE items SET expires_at = 1 WHERE id % 13 = 0", []).unwrap();
+
+        let reference = |q: &Query, limit: usize, offset: usize| -> Vec<i64> {
+            s.query(q, "i.id", limit, offset, TextClause::Fts, |r| r.get(0)).unwrap()
+        };
+        assert!(matches!(s.plan(&Query::parse("roadmap")).unwrap(), Plan::Many(_)));
+        assert!(matches!(s.plan(&Query::parse("note 1234")).unwrap(), Plan::Few(_)));
+        assert!(matches!(s.plan(&Query::parse("zebra")).unwrap(), Plan::Nothing));
+        for text in [
+            "roadmap",
+            "roadmap ab",
+            "type:link roadmap",
+            "-type:link roadmap",
+            "app:Slack roadmap",
+            "note 1234",
+            "zebra",
+        ] {
+            let q = Query::parse(text);
+            for (limit, offset) in [(150, 0), (150, 150), (10, n_items - 20), (usize::MAX, 0)] {
+                let fast: Vec<i64> = s.search(&q, limit, offset).unwrap().iter().map(|i| i.id).collect();
+                assert_eq!(fast, reference(&q, limit, offset), "{text:?} limit {limit} offset {offset}");
+            }
+            let all: HashSet<i64> = reference(&q, usize::MAX, 0).into_iter().collect();
+            assert_eq!(s.search_ids(&q).unwrap(), all, "{text:?}");
+        }
     }
 
     #[test]

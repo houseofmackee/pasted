@@ -246,7 +246,7 @@ Set `PASTED_HOME` to use a different data directory (useful for testing). `PASTE
 ```sh
 cargo test                     # unit tests, pasteboard integration tests, card layout snapshot
 cargo clippy --all-targets
-cargo bench --bench store      # capture and search benchmarks (search budget: 20 ms at 100k items)
+cargo bench --bench store      # capture and search benchmarks (search budget: 20 ms at 100k items; currently 0.1 to 10 ms)
 ```
 
 The pasteboard tests use private, uniquely named pasteboards and never touch your clipboard. The card layout test (`tests/card_layout.rs`) builds a real card for each kind of item and compares every subview's frame and text with `tests/snapshots/card_layout.txt`; after an intended change, review the diff and run `UPDATE_SNAPSHOTS=1 cargo test --test card_layout`. Before a release, work through [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).

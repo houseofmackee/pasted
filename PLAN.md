@@ -191,12 +191,12 @@ Done:
 - **App icon**: stacked shelf cards on a blue-violet tile, drawn on the macOS icon grid; SVG source with `scripts/make_icon.sh` to rebuild the `.icns`; used by `Pasted.app` and built into the binary so dialogs show it when running from a terminal.
 - **Testing**: the crate is now a library plus a thin binary, so tests and benchmarks can reach the code. Pasteboard integration tests on private pasteboards (plain, rich, multi-item, image, concealed, patterns, size limit, store and write back exactly, duplicate copies); card layout snapshot test on the main thread (12 kinds, every subview's frame and text, checks that nothing spills outside the card and sensitive text never shows); criterion benchmarks (one insert into 10k history about 0.37 ms, 10k batch import about 1 s, all 7 shelf searches at 100k items within 20 ms, 0.2 to 18.6 ms); `docs/RELEASE_CHECKLIST.md` for full-screen apps, displays, Spaces, Stage Manager, secure input, install and accessibility.
 - **One plain text encoding**: the UTF-16 copy of the plain text that macOS adds to rich text copies is dropped when it repeats the UTF-8 text (kept when it differs, for example bullets some apps only put in the UTF-16 version), on capture and on every insert; checksums leave it out so old and new copies are still duplicates; migration 5 cleans stored items (45 of 1,432 imported items, 6 kept because their UTF-16 text differs). Pasting still offers UTF-16, which macOS recreates.
+- **Search headroom**: the full text match runs once and decides the plan: up to 2,000 matches are looked up directly, more walk a new compact index (`items_recent`, migration 6) newest first and stop after a page; fuzzy fill loads only id, time and text for its 5,000 candidates, scores them on up to 4 cores, skips impossible typo comparisons without allocating, and loads full items for the winners only; the duplicate check is pinned to its index. At 100k items every shelf search takes 0.1 to 9.6 ms (common word 18.6 to 5.8 ms, two words 17.9 to 9.5 ms, app filter 17.6 to 4.5 ms, fuzzy fill 14.1 to 4.6 ms); capture speed unchanged. Tests check that every plan returns the same results as the single query and that the planned indexes are used.
 - **Phase 6**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`; `scripts/make_dmg.sh` builds `dist/Pasted-<version>-arm64.dmg` for direct download (built-in `hdiutil` only, LZMA compressed, app plus Applications link plus "Read Me First.txt" on opening an unnotarized app), refuses non-arm64 binaries, mounts the result to verify the signature, architecture and layout, and writes a SHA-256 file. Notarization and Sparkle stay deferred.
 
 Next:
 
-Nothing scheduled. Candidates:
-- Search headroom: common-word queries take about 18 ms of the 20 ms budget at 100k items.
+Nothing scheduled.
 
 Known limitations:
 
@@ -293,4 +293,5 @@ Excluded apps and rules live in the Core Data store or preferences depending on 
 - **Deferred: bundle identifier and signing team.** `io.pasted.app` stays a placeholder until a real Apple Developer team exists. Revisit before Phase 6 notarization.
 - **Distribution: direct-download DMG, Apple silicon only.** No universal binary, no Mac App Store.
 - **Deferred: notarization and Sparkle updates.** Without notarization, first launch needs right-click > Open (or System Settings > Privacy & Security > Open Anyway); document this next to the download.
+- **Performance: no further tuning planned.** Current speed is good for day-to-day use (searches 0.1 to 10 ms and the statistics report about 0.55 s, both at 100k items).
 - **Deferred: iCloud sync.** Phase 7 is on hold. Revisit later, including whether a folder-based sync (iCloud Drive/Dropbox) should come before CloudKit.
