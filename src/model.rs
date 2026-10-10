@@ -143,11 +143,17 @@ pub struct Item {
     pub size_bytes: i64,
     /// Unix ms when a rule will remove this item from history.
     pub expires_at: Option<i64>,
+    /// Concealed or secret-looking content kept briefly; masked on cards and
+    /// never shared with AI tools or exported.
+    pub sensitive: bool,
 }
 
 impl Item {
     /// Single line summary for lists and card headers.
     pub fn summary(&self, max_chars: usize) -> String {
+        if self.sensitive {
+            return "\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022}\u{2022} (sensitive, hidden)".to_string();
+        }
         let base = match (&self.title, self.kind) {
             (Some(t), _) if !t.is_empty() => t.clone(),
             (_, ItemKind::Image) => match (self.meta.width, self.meta.height) {

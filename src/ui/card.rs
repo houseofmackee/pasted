@@ -150,6 +150,9 @@ pub fn cover_view(image: &NSImage, frame: objc2_foundation::NSRect, mtm: MainThr
 }
 
 fn footer_text(item: &Item) -> String {
+    if item.sensitive {
+        return "Hidden".into(); // Not even the length is shown.
+    }
     match item.kind {
         ItemKind::Image => match (item.meta.width, item.meta.height) {
             (Some(w), Some(h)) => format!("{w} \u{00d7} {h}"),
@@ -194,7 +197,11 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
     if let Some(layer) = header.layer() {
         layer.setBackgroundColor(Some(&color.CGColor()));
     }
-    let heading = item.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| item.kind.label().to_string());
+    let heading = if item.sensitive {
+        "\u{1F512} Sensitive".to_string()
+    } else {
+        item.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| item.kind.label().to_string())
+    };
     let title = label(&heading, 14.0, true, mtm);
     title.setTextColor(Some(&NSColor::whiteColor()));
     title.setFrame(rect(PAD, 24.0, w - PAD * 2.0 - 44.0, 20.0));
@@ -218,7 +225,20 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
     let body_y = HEADER_H + 8.0;
     let body_h = h - body_y - FOOTER_H;
     let body = rect(PAD, top(body_y, body_h), w - PAD * 2.0, body_h);
-    match item.kind {
+    let kind = if item.sensitive { None } else { Some(item.kind) };
+    if item.sensitive {
+        // Masked until previewed; pasting still works.
+        let dots = label(&"\u{2022}".repeat(12), 22.0, true, mtm);
+        dots.setFrame(rect(PAD, top(body_y + 30.0, 30.0), w - PAD * 2.0, 30.0));
+        card.addSubview(&dots);
+        let hint =
+            wrapping_label("Hidden. Press Space or \u{2318}Y to show it.", &NSFont::systemFontOfSize(12.0), 3, mtm);
+        hint.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        hint.setFrame(rect(PAD, top(body_y + 70.0, 40.0), w - PAD * 2.0, 40.0));
+        card.addSubview(&hint);
+    }
+    match kind.unwrap_or(ItemKind::Color) {
+        _ if item.sensitive => {}
         ItemKind::Image => {
             if let Some(image) = &content.image {
                 let iv = NSImageView::imageViewWithImage(image, mtm);

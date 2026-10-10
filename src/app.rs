@@ -525,9 +525,10 @@ impl App {
         }
     }
 
-    /// Removes items whose rule-based expiry has passed (checked every 30 s).
+    /// Removes items whose expiry has passed. Checked every 5 s so sensitive
+    /// items do not outlive their deadline by much (the query is indexed).
     fn expire_items(&mut self) {
-        if self.last_expiry_check.elapsed() < Duration::from_secs(30) {
+        if self.last_expiry_check.elapsed() < Duration::from_secs(5) {
             return;
         }
         self.last_expiry_check = Instant::now();
@@ -740,6 +741,21 @@ impl App {
                     }
                 }
                 Err(e) => tracing::error!("saving clip failed: {e:#}"),
+            },
+            Capture::Sensitive(item, reason, ms) => match self.store.insert(&item, true) {
+                Ok(inserted) => {
+                    // Rules never pin sensitive items; they only live until the deadline.
+                    let id = inserted.id();
+                    if let Err(e) = self.store.mark_sensitive(id, now_ms() + ms) {
+                        tracing::error!("marking item sensitive failed: {e:#}");
+                    }
+                    tracing::info!("kept sensitive item {id} ({reason:?}) for {}", crate::rules::format_duration(ms));
+                    self.push_stack(id);
+                    if self.shelf.is_visible() && self.shelf.board.is_none() {
+                        self.shelf.reload(&self.store);
+                    }
+                }
+                Err(e) => tracing::error!("saving sensitive clip failed: {e:#}"),
             },
             Capture::Ignored(reason) => tracing::info!("not saved: {reason:?}"),
             Capture::TooLarge(n) => tracing::info!("not saved: {n} bytes exceeds the size limit"),

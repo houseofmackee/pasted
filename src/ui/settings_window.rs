@@ -19,7 +19,15 @@ use crate::settings::{Retention, Settings};
 use crate::shortcut::{Modifiers, Shortcut};
 
 const W: f64 = 620.0;
-const H: f64 = 560.0;
+const H: f64 = 600.0;
+/// "Sensitive items" choices and their `sensitive_expiry` values.
+const SENSITIVE_CHOICES: &[(&str, &str)] = &[
+    ("Are never saved", ""),
+    ("Are kept for 1 minute", "1m"),
+    ("Are kept for 5 minutes", "5m"),
+    ("Are kept for 15 minutes", "15m"),
+    ("Are kept for 1 hour", "1h"),
+];
 const LABEL_W: f64 = 190.0;
 const CONTROL_X: f64 = 210.0;
 
@@ -272,6 +280,7 @@ pub struct SettingsWindow {
     previous_board: Retained<ShortcutRecorder>,
     shortcut_warning: Retained<NSTextField>,
     ignore_concealed: Retained<NSButton>,
+    sensitive: Retained<NSPopUpButton>,
     ignore_secrets: Retained<NSButton>,
     visible_sharing: Retained<NSButton>,
     apps_table: Retained<NSTableView>,
@@ -540,6 +549,15 @@ impl SettingsWindow {
         }
         let [ignore_concealed, ignore_secrets, visible_sharing]: [Retained<NSButton>; 3] =
             boxes.try_into().unwrap_or_else(|_| unreachable!());
+        let sensitive = popup(&SENSITIVE_CHOICES.iter().map(|(l, _)| l.to_string()).collect::<Vec<_>>(), target, mtm);
+        let y = f.row("Those items:", 26.0);
+        sensitive.setFrame(rect(CONTROL_X - 20.0, y, 220.0, 26.0));
+        f.add(&sensitive);
+        let hint = label("Kept items are hidden on cards and never exported or shared.", 11.0, false, mtm);
+        hint.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        let y = f.row("", 16.0);
+        hint.setFrame(rect(CONTROL_X - 20.0, y, W - CONTROL_X - 20.0, 16.0));
+        f.add(&hint);
 
         let apps = AppsDataSource::new(mtm);
         let apps_table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, 340.0, 100.0));
@@ -786,6 +804,7 @@ impl SettingsWindow {
             previous_board,
             shortcut_warning,
             ignore_concealed,
+            sensitive,
             ignore_secrets,
             visible_sharing,
             apps_table,
@@ -848,6 +867,11 @@ impl SettingsWindow {
         self.previous_board.set_shortcut(s.shortcuts.previous_pinboard);
         let p = &s.privacy;
         set_checked(&self.ignore_concealed, p.ignore_concealed);
+        let si = SENSITIVE_CHOICES
+            .iter()
+            .position(|(_, v)| crate::rules::parse_duration(v) == crate::rules::parse_duration(&p.sensitive_expiry))
+            .unwrap_or(0);
+        self.sensitive.selectItemAtIndex(si as isize);
         set_checked(&self.ignore_secrets, p.ignore_secrets);
         set_checked(&self.visible_sharing, p.visible_during_screen_sharing);
         let m = &s.mcp;
@@ -924,6 +948,9 @@ impl SettingsWindow {
         }
         let p = &mut s.privacy;
         p.ignore_concealed = checked(&self.ignore_concealed);
+        if let Some((_, v)) = SENSITIVE_CHOICES.get(self.sensitive.indexOfSelectedItem().max(0) as usize) {
+            p.sensitive_expiry = v.to_string();
+        }
         p.ignore_secrets = checked(&self.ignore_secrets);
         p.visible_during_screen_sharing = checked(&self.visible_sharing);
         let m = &mut s.mcp;

@@ -19,7 +19,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Export to a restorable ZIP backup, JSON or CSV
 - Optional read-only access for AI tools such as Claude and Cursor through a local MCP server (off by default)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
-- Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
+- Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers (or, if you choose, keeps them hidden for a few minutes), supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
 - A command line interface for scripts
 
@@ -128,6 +128,16 @@ Imports copy history as it is by default. To leave sensitive items behind, choos
 
 The importer copies Paste's database to a temporary directory and reads the copy, so Paste's own files are never modified. Running it again only adds items that are new since the last import. History retention and shortcuts are taken from Paste's settings. Quit Paste first for the most complete import.
 
+## Sensitive items
+
+By default, content that password managers mark as private and text that looks like a password, API key, token or card number is never saved. If you would rather be able to paste a one-time code or temporary password again, set Settings > Privacy > Those items to be kept for 1, 5 or 15 minutes or 1 hour (`sensitive_expiry = "5m"` in the settings file). Kept items:
+
+- show as `••••••••` with a countdown on their card; preview reveals them, pasting works normally,
+- are never shared with AI tools, exported, or sent to the link preview fetcher, and rules never pin them,
+- disappear from lists and search at their deadline and are deleted within seconds, with the database set to overwrite deleted content.
+
+Excluded apps and your own ignore patterns still mean never saved.
+
 ## Encryption at rest
 
 Turn it on in Settings > Privacy > Encryption, or with `pasted encryption enable` while the app is not running (`status` and `disable` work the same way). Pasted then:
@@ -200,6 +210,7 @@ ignore_secrets = true
 excluded_apps = ["com.1password.1password", "..."]
 ignore_patterns = []
 visible_during_screen_sharing = false
+sensitive_expiry = ""          # "" never saves sensitive items; "5m" keeps them briefly
 
 [pasting]                       # automatic cleanup on paste, off by default
 trim_whitespace = false

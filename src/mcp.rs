@@ -178,7 +178,8 @@ impl Access {
     }
 
     fn allows(&self, store: &Store, item: &Item) -> Result<bool> {
-        if !self.kinds.contains(&item.kind) {
+        // Sensitive items are never shared, whatever the settings say.
+        if item.sensitive || !self.kinds.contains(&item.kind) {
             return Ok(false);
         }
         let boards = store.item_pinboard_names_for(item.id)?;
@@ -627,6 +628,23 @@ mod tests {
         assert_eq!(ids.len(), 2, "only pinboard items when history is excluded: {ids:?}");
         let link = handle(&mut s, &call("get_clipboard_item", json!({ "id": f.history_link })), &open).unwrap();
         assert_eq!(link["result"]["isError"], true);
+    }
+
+    #[test]
+    fn sensitive_items_are_never_shared() {
+        let f = fixture();
+        let secret = {
+            let mut s = Store::open(&f.db, f.blobs.clone()).unwrap();
+            let id = s.insert(&text_item("temporary password hunter2", 5_000), true).unwrap().id();
+            s.mark_sensitive(id, crate::model::now_ms() + 60_000).unwrap();
+            id
+        };
+        let open = opener(&f, enabled());
+        let mut s = Session::default();
+        let r = handle(&mut s, &call("search_clipboard", json!({ "query": "hunter2" })), &open).unwrap();
+        assert_eq!(r["result"]["structuredContent"]["items"].as_array().unwrap().len(), 0);
+        let g = handle(&mut s, &call("get_clipboard_item", json!({ "id": secret })), &open).unwrap();
+        assert_eq!(g["result"]["isError"], true);
     }
 
     #[test]

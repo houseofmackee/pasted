@@ -101,6 +101,9 @@ CREATE INDEX items_link_url ON items(json_extract(meta, '$.url')) WHERE kind = '
 ALTER TABLE items ADD COLUMN expires_at INTEGER;
 CREATE INDEX items_expires_at ON items(expires_at) WHERE expires_at IS NOT NULL;
 "#,
+    r#"
+ALTER TABLE items ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0;
+"#,
 ];
 
 /// Failed link previews are retried after this long.
@@ -176,6 +179,7 @@ pub struct ExportRow {
     pub last_used_at: Option<i64>,
     pub in_history: bool,
     pub ocr: Option<String>,
+    pub sensitive: bool,
 }
 
 pub struct Store {
@@ -217,7 +221,7 @@ fn escape_like(s: &str) -> String {
 }
 
 const ITEM_COLUMNS: &str = "i.id, i.kind, i.title, i.text, i.meta, a.bundle_id, a.name, i.device, \
-     i.created_at, i.timestamp, i.use_count, i.size_bytes, i.expires_at";
+     i.created_at, i.timestamp, i.use_count, i.size_bytes, i.expires_at, i.sensitive";
 
 fn item_from_row(row: &Row) -> rusqlite::Result<Item> {
     let kind: String = row.get(1)?;
@@ -236,6 +240,7 @@ fn item_from_row(row: &Row) -> rusqlite::Result<Item> {
         use_count: row.get(10)?,
         size_bytes: row.get(11)?,
         expires_at: row.get(12)?,
+        sensitive: row.get(13)?,
     })
 }
 
@@ -269,7 +274,11 @@ impl Store {
         conn.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get::<_, i64>(0))
             .with_context(|| format!("{} could not be read (encrypted with a different key?)", db.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;")?;
+        // secure_delete overwrites deleted content, so expired or deleted clips
+        // do not linger in free pages of the database file.
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA secure_delete = ON;",
+        )?;
         std::fs::create_dir_all(&blobs)?;
         let mut store = Store { conn, blobs, keys };
         store.migrate()?;
@@ -489,6 +498,9 @@ impl Store {
             }
             None => clauses.push("i.in_history = 1".into()),
         }
+        // Expired items are hidden immediately, before the sweep deletes them.
+        clauses.push("(i.expires_at IS NULL OR i.expires_at > ?)".into());
+        args.push(now_ms().into());
         if !q.kinds.is_empty() {
             clauses.push(format!("i.kind IN ({})", vec!["?"; q.kinds.len()].join(",")));
             args.extend(q.kinds.iter().map(|k| Value::from(k.as_str().to_string())));
@@ -634,7 +646,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT url FROM (
                  SELECT json_extract(meta, '$.url') AS url, max(timestamp) AS ts
-                 FROM items WHERE kind = 'link' GROUP BY 1
+                 FROM items WHERE kind = 'link' AND sensitive = 0 GROUP BY 1
              )
              WHERE url IS NOT NULL
                AND url NOT IN (SELECT url FROM link_previews WHERE status = 'ok' OR fetched_at > ?1)
@@ -796,11 +808,30 @@ impl Store {
 
     /// Deletes history items whose rule-based expiry has passed.
     pub fn expire_due(&self, now: i64) -> Result<usize> {
-        Ok(self.conn.execute(
+        let sensitive: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM items WHERE sensitive = 1 AND expires_at IS NOT NULL AND expires_at <= ?1)",
+            [now],
+            |r| r.get(0),
+        )?;
+        let n = self.conn.execute(
             "DELETE FROM items WHERE expires_at IS NOT NULL AND expires_at <= ?1
              AND id NOT IN (SELECT item_id FROM pinboard_items)",
             [now],
-        )?)
+        )?;
+        if sensitive {
+            // Move the deletions out of the write-ahead log too.
+            self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+            self.collect_garbage()?;
+        }
+        Ok(n)
+    }
+
+    /// Marks an item sensitive and schedules its removal. A re-copy of the
+    /// same content refreshes the deadline.
+    pub fn mark_sensitive(&self, item_id: i64, expires_at: i64) -> Result<()> {
+        self.conn
+            .execute("UPDATE items SET sensitive = 1, expires_at = ?2 WHERE id = ?1", params![item_id, expires_at])?;
+        Ok(())
     }
 
     pub fn unpin(&self, item_id: i64, pinboard_id: i64) -> Result<()> {
@@ -966,7 +997,7 @@ impl Store {
     pub fn export_rows(&self) -> Result<Vec<ExportRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT i.id, i.kind, i.title, i.text, i.meta, json_extract(i.meta, '$.url'), a.bundle_id, a.name,
-                    i.device, i.created_at, i.timestamp, i.use_count, i.last_used_at, i.in_history, o.text
+                    i.device, i.created_at, i.timestamp, i.use_count, i.last_used_at, i.in_history, o.text, i.sensitive
              FROM items i LEFT JOIN apps a ON a.id = i.app_id LEFT JOIN ocr o ON o.item_id = i.id
              ORDER BY i.timestamp DESC",
         )?;
@@ -987,6 +1018,7 @@ impl Store {
                 last_used_at: r.get(12)?,
                 in_history: r.get(13)?,
                 ocr: r.get(14)?,
+                sensitive: r.get(15)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -1294,6 +1326,39 @@ pub mod tests {
         assert_eq!(r.most_pasted.len(), 1);
         assert_eq!((r.most_pasted[0].id, r.most_pasted[0].use_count), (pasted, 2));
         assert_eq!(r.pastes, 2);
+    }
+
+    #[test]
+    fn sensitive_items_are_hidden_when_expired_and_scrubbed() {
+        let (dir, mut s) = temp_store();
+        let now = now_ms();
+        let secret = "x".repeat(40_000) + "TOP-SECRET-TOKEN"; // large enough for a blob file
+        let id = s.insert(&text_item(&secret, now), true).unwrap().id();
+        let keep = s.insert(&text_item("normal", now), true).unwrap().id();
+        s.mark_sensitive(id, now + 60_000).unwrap();
+        let item = s.get(id).unwrap().unwrap();
+        assert!(item.sensitive);
+        assert!(item.summary(80).contains("sensitive, hidden"));
+        assert_eq!(s.search(&Query::default(), 10, 0).unwrap().len(), 2);
+        // Once past its deadline it disappears from search even before the sweep.
+        s.mark_sensitive(id, now - 1).unwrap();
+        let visible: Vec<i64> = s.search(&Query::default(), 10, 0).unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(visible, [keep]);
+        assert_eq!(s.expire_due(now_ms()).unwrap(), 1);
+        drop(s);
+        // Nothing of the secret is left in any file: db, WAL or blobs.
+        let mut stack = vec![dir.path().to_path_buf()];
+        while let Some(p) = stack.pop() {
+            for e in std::fs::read_dir(&p).unwrap().flatten() {
+                let path = e.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else {
+                    let data = std::fs::read(&path).unwrap();
+                    assert!(!data.windows(16).any(|w| w == b"TOP-SECRET-TOKEN"), "found in {}", path.display());
+                }
+            }
+        }
     }
 
     #[test]

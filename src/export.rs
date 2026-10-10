@@ -129,6 +129,7 @@ struct PreviewOut {
 #[derive(Debug, Default)]
 pub struct ExportSummary {
     pub items: usize,
+    pub skipped_sensitive: usize,
     pub files: usize,
     pub bytes: u64,
 }
@@ -138,6 +139,9 @@ impl ExportSummary {
         let mut s = format!("Exported {} items to {}", self.items, path.display());
         if self.files > 0 {
             s.push_str(&format!(" ({} data files, {:.1} MB)", self.files, self.bytes as f64 / 1_048_576.0));
+        }
+        if self.skipped_sensitive > 0 {
+            s.push_str(&format!("; {} sensitive items were left out", self.skipped_sensitive));
         }
         s
     }
@@ -198,10 +202,14 @@ fn selected_ids(store: &Store, query: Option<&Query>) -> Result<Option<HashSet<i
 
 pub fn export(store: &Store, path: &Path, format: Format, query: Option<&Query>) -> Result<ExportSummary> {
     let ids = selected_ids(store, query)?;
-    let rows: Vec<_> =
+    let mut rows: Vec<_> =
         store.export_rows()?.into_iter().filter(|r| ids.as_ref().is_none_or(|s| s.contains(&r.id))).collect();
+    // Sensitive items only live for minutes and are never written to exports.
+    let before = rows.len();
+    rows.retain(|r| !r.sensitive);
+    let skipped_sensitive = before - rows.len();
     let board_names = store.item_pinboard_names()?;
-    let mut summary = ExportSummary { items: rows.len(), ..ExportSummary::default() };
+    let mut summary = ExportSummary { items: rows.len(), skipped_sensitive, ..ExportSummary::default() };
 
     if format == Format::Csv {
         write_atomic(path, |f| {
@@ -582,6 +590,19 @@ mod tests {
         assert_eq!(lines[0], "id,created,last_copied,type,app,title,pinboards,text");
         assert!(text.contains("\"hello, \"\"world\"\"\nline two\""), "{text}");
         assert!(!text.contains("example.com"), "the filter keeps only text items");
+    }
+
+    #[test]
+    fn sensitive_items_are_not_exported() {
+        let (dir, mut s) = temp_store();
+        s.insert(&text_item("keep me", 1_000), true).unwrap();
+        let secret = s.insert(&text_item("one-time code 123456", 2_000), true).unwrap().id();
+        s.mark_sensitive(secret, crate::model::now_ms() + 60_000).unwrap();
+        let path = dir.path().join("out.csv");
+        let summary = export(&s, &path, Format::Csv, None).unwrap();
+        assert_eq!((summary.items, summary.skipped_sensitive), (1, 1));
+        assert!(!std::fs::read_to_string(&path).unwrap().contains("123456"));
+        assert!(summary.describe(&path).contains("1 sensitive items were left out"));
     }
 
     #[test]

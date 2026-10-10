@@ -44,6 +44,23 @@ pub enum IgnoreReason {
     Pattern(String),
 }
 
+impl IgnoreReason {
+    /// Concealed or secret-looking content, which may be kept briefly instead
+    /// of skipped. Excluded apps and the user's own patterns never are.
+    pub fn is_sensitive(&self) -> bool {
+        matches!(self, IgnoreReason::Concealed(_) | IgnoreReason::Secret)
+    }
+}
+
+/// What to do with copied text.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Verdict {
+    Save,
+    Ignore(IgnoreReason),
+    /// Save, but mark sensitive and remove after this many milliseconds.
+    KeepBriefly(IgnoreReason, i64),
+}
+
 pub struct PrivacyFilter {
     settings: Privacy,
     patterns: Vec<Regex>,
@@ -80,6 +97,35 @@ impl PrivacyFilter {
             .then(|| IgnoreReason::ExcludedApp(app.to_string()))
     }
 
+    /// How long sensitive items are kept, if the user opted in.
+    pub fn sensitive_expiry_ms(&self) -> Option<i64> {
+        let e = self.settings.sensitive_expiry.trim();
+        (!e.is_empty()).then(|| crate::rules::parse_duration(e)).flatten()
+    }
+
+    /// Turns a skip reason into the final verdict, honoring the
+    /// keep-sensitive-briefly setting.
+    pub fn verdict(&self, reason: Option<IgnoreReason>) -> Verdict {
+        match reason {
+            None => Verdict::Save,
+            Some(r) if r.is_sensitive() => match self.sensitive_expiry_ms() {
+                Some(ms) => Verdict::KeepBriefly(r, ms),
+                None => Verdict::Ignore(r),
+            },
+            Some(r) => Verdict::Ignore(r),
+        }
+    }
+
+    /// The text decision: the user's own patterns win over secret detection,
+    /// so a pattern match is never kept, even briefly.
+    pub fn decide_text(&self, text: &str) -> Verdict {
+        if let Some(re) = self.patterns.iter().find(|re| re.is_match(text)) {
+            return Verdict::Ignore(IgnoreReason::Pattern(re.as_str().to_string()));
+        }
+        self.verdict((self.settings.ignore_secrets && looks_secret(text)).then_some(IgnoreReason::Secret))
+    }
+
+    #[cfg(test)]
     pub fn check_text(&self, text: &str) -> Option<IgnoreReason> {
         if self.settings.ignore_secrets && looks_secret(text) {
             return Some(IgnoreReason::Secret);
@@ -162,6 +208,37 @@ mod tests {
         assert!(!mentions_password("passport photo"));
         assert!(!mentions_password("bypass the cache"));
         assert!(!mentions_password(&format!("password {}", "x".repeat(400))));
+    }
+
+    #[test]
+    fn sensitive_items_can_be_kept_briefly() {
+        let never = PrivacyFilter::new(&Privacy::default());
+        assert_eq!(never.decide_text("AKIAIOSFODNN7EXAMPLE"), Verdict::Ignore(IgnoreReason::Secret));
+        assert_eq!(never.decide_text("hello"), Verdict::Save);
+
+        let brief = PrivacyFilter::new(&Privacy {
+            sensitive_expiry: "5m".into(),
+            ignore_patterns: vec!["(?i)internal".into()],
+            ..Privacy::default()
+        });
+        assert_eq!(brief.decide_text("AKIAIOSFODNN7EXAMPLE"), Verdict::KeepBriefly(IgnoreReason::Secret, 300_000));
+        // The user's own pattern always wins, even over a secret.
+        assert!(matches!(
+            brief.decide_text("internal AKIAIOSFODNN7EXAMPLE"),
+            Verdict::Ignore(IgnoreReason::Pattern(_))
+        ));
+        // Concealed markers can be kept briefly; excluded apps never are.
+        let types = vec!["org.nspasteboard.ConcealedType".to_string()];
+        assert!(matches!(
+            brief.verdict(brief.check_types(&types, None)),
+            Verdict::KeepBriefly(IgnoreReason::Concealed(_), _)
+        ));
+        let plain = vec!["public.utf8-plain-text".to_string()];
+        let excluded = brief.check_types(&plain, Some("com.1password.1password"));
+        assert!(matches!(brief.verdict(excluded), Verdict::Ignore(IgnoreReason::ExcludedApp(_))));
+        // A bad duration means "never save", not "keep forever".
+        let bad = PrivacyFilter::new(&Privacy { sensitive_expiry: "soon".into(), ..Privacy::default() });
+        assert_eq!(bad.decide_text("AKIAIOSFODNN7EXAMPLE"), Verdict::Ignore(IgnoreReason::Secret));
     }
 
     #[test]

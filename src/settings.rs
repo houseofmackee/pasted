@@ -102,6 +102,11 @@ pub struct Privacy {
     pub ignore_patterns: Vec<String>,
     /// Show clip contents while the screen is being shared or recorded.
     pub visible_during_screen_sharing: bool,
+    /// When set (for example "5m"), items skipped by `ignore_concealed` or
+    /// `ignore_secrets` are kept for this long instead of never being saved.
+    /// Empty means never save them. Excluded apps and ignore patterns always
+    /// mean never saved.
+    pub sensitive_expiry: String,
 }
 
 pub const DEFAULT_EXCLUDED_APPS: &[&str] = &[
@@ -124,6 +129,7 @@ impl Default for Privacy {
             excluded_apps: DEFAULT_EXCLUDED_APPS.iter().map(|s| s.to_string()).collect(),
             ignore_patterns: Vec::new(),
             visible_during_screen_sharing: false,
+            sensitive_expiry: String::new(),
         }
     }
 }
