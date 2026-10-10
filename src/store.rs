@@ -137,6 +137,28 @@ pub struct Stats {
     pub top_apps: Vec<(String, i64)>,
 }
 
+/// Numbers for the statistics window, over the last `days` days.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub days: i64,
+    /// One entry per local day, oldest first, including empty days.
+    pub per_day: Vec<(chrono::NaiveDate, i64)>,
+    /// Items added per local hour of day.
+    pub per_hour: [i64; 24],
+    pub by_kind: Vec<(String, i64)>,
+    /// Bundle id, display name, items added.
+    pub top_apps: Vec<(String, String, i64)>,
+    pub added: i64,
+    /// Items added in the `days` before the range, for comparison.
+    pub added_previous: i64,
+    /// All time.
+    pub most_pasted: Vec<Item>,
+    pub pastes: i64,
+    pub history_items: i64,
+    pub pinboards: i64,
+    pub bytes: i64,
+}
+
 pub struct Store {
     conn: Connection,
     blobs: PathBuf,
@@ -788,6 +810,90 @@ impl Store {
         })
     }
 
+    pub fn report(&self, days: i64, now: i64) -> Result<Report> {
+        use chrono::{Local, TimeZone};
+        let days = days.max(1);
+        let today = Local
+            .timestamp_millis_opt(now)
+            .single()
+            .map(|d| d.date_naive())
+            .unwrap_or_else(|| Local::now().date_naive());
+        let first = today - chrono::Duration::days(days - 1);
+        let midnight = |d: chrono::NaiveDate| {
+            Local.from_local_datetime(&d.and_hms_opt(0, 0, 0).unwrap()).earliest().map(|t| t.timestamp_millis())
+        };
+        let since = midnight(first).unwrap_or(now - days * 86_400_000);
+        let prev_since = midnight(first - chrono::Duration::days(days)).unwrap_or(since - days * 86_400_000);
+
+        let mut counts = std::collections::HashMap::new();
+        let mut stmt = self.conn.prepare(
+            "SELECT date(created_at / 1000, 'unixepoch', 'localtime'), count(*) FROM items
+             WHERE created_at >= ?1 GROUP BY 1",
+        )?;
+        for row in stmt.query_map([since], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))? {
+            let (day, n) = row?;
+            if let Ok(d) = chrono::NaiveDate::parse_from_str(&day, "%Y-%m-%d") {
+                counts.insert(d, n);
+            }
+        }
+        let per_day =
+            (0..days).map(|i| first + chrono::Duration::days(i)).map(|d| (d, *counts.get(&d).unwrap_or(&0))).collect();
+
+        let mut per_hour = [0i64; 24];
+        let mut stmt = self.conn.prepare(
+            "SELECT CAST(strftime('%H', created_at / 1000, 'unixepoch', 'localtime') AS INTEGER), count(*)
+             FROM items WHERE created_at >= ?1 GROUP BY 1",
+        )?;
+        for row in stmt.query_map([since], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (h, n) = row?;
+            if (0..24).contains(&h) {
+                per_hour[h as usize] = n;
+            }
+        }
+
+        let pairs = |sql: &str, arg: i64| -> Result<Vec<(String, i64)>> {
+            let mut stmt = self.conn.prepare(sql)?;
+            let rows = stmt.query_map([arg], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        };
+        let by_kind =
+            pairs("SELECT kind, count(*) FROM items WHERE created_at >= ?1 GROUP BY kind ORDER BY 2 DESC", since)?;
+        let mut stmt = self.conn.prepare(
+            "SELECT a.bundle_id, coalesce(a.name, a.bundle_id), count(*) FROM items i JOIN apps a ON a.id = i.app_id
+             WHERE i.created_at >= ?1 GROUP BY a.id ORDER BY 3 DESC LIMIT 8",
+        )?;
+        let top_apps =
+            stmt.query_map([since], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
+
+        let one = |sql: &str, args: &[i64]| -> Result<i64> {
+            Ok(self.conn.query_row(sql, params_from_iter(args.iter()), |r| r.get(0))?)
+        };
+        let added = one("SELECT count(*) FROM items WHERE created_at >= ?1", &[since])?;
+        let added_previous =
+            one("SELECT count(*) FROM items WHERE created_at >= ?1 AND created_at < ?2", &[prev_since, since])?;
+        let sql = format!(
+            "SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN apps a ON a.id = i.app_id
+             WHERE i.use_count > 0 ORDER BY i.use_count DESC, i.last_used_at DESC LIMIT 8"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let most_pasted = stmt.query_map([], item_from_row)?.collect::<rusqlite::Result<_>>()?;
+        let stats = self.stats()?;
+        Ok(Report {
+            days,
+            per_day,
+            per_hour,
+            by_kind,
+            top_apps,
+            added,
+            added_previous,
+            most_pasted,
+            pastes: one("SELECT coalesce(sum(use_count), 0) FROM items", &[])?,
+            history_items: stats.history_items,
+            pinboards: stats.pinboards,
+            bytes: stats.bytes,
+        })
+    }
+
     pub fn begin_import(&self, source: &str) -> Result<i64> {
         self.conn.execute("INSERT INTO import_runs (source, started_at) VALUES (?1, ?2)", params![source, now_ms()])?;
         Ok(self.conn.last_insert_rowid())
@@ -998,6 +1104,34 @@ pub mod tests {
         let board = s.pinboard_by_name("Tickets").unwrap().unwrap();
         s.pin(later, board, None).unwrap();
         assert_eq!(s.expire_due(i64::MAX).unwrap(), 0);
+    }
+
+    #[test]
+    fn report_buckets_by_local_day_and_hour() {
+        use chrono::{Local, TimeZone};
+        let (_d, mut s) = temp_store();
+        let at = |d: u32, h: u32| Local.with_ymd_and_hms(2026, 10, d, h, 30, 0).unwrap().timestamp_millis();
+        let now = at(10, 18);
+        s.insert(&text_item("a", at(10, 9)), true).unwrap();
+        s.insert(&text_item("b", at(10, 9)), true).unwrap();
+        s.insert(&text_item("https://x.com", at(8, 23)), true).unwrap();
+        s.insert(&text_item("old", at(1, 12)), true).unwrap();
+        let pasted = s.insert(&text_item("pasted", at(9, 0)), true).unwrap().id();
+        s.mark_used(pasted).unwrap();
+        s.mark_used(pasted).unwrap();
+
+        let r = s.report(7, now).unwrap();
+        assert_eq!(r.per_day.len(), 7);
+        assert_eq!(r.per_day.last().unwrap(), &(chrono::NaiveDate::from_ymd_opt(2026, 10, 10).unwrap(), 2));
+        assert_eq!(r.per_day[4].1, 1, "Oct 8");
+        assert_eq!(r.added, 4);
+        assert_eq!(r.added_previous, 1, "Oct 1 falls in the previous 7 days");
+        assert_eq!((r.per_hour[9], r.per_hour[23], r.per_hour[0]), (2, 1, 1));
+        assert_eq!(r.by_kind[0], ("text".to_string(), 3));
+        assert_eq!(r.top_apps[0].1, "Safari");
+        assert_eq!(r.most_pasted.len(), 1);
+        assert_eq!((r.most_pasted[0].id, r.most_pasted[0].use_count), (pasted, 2));
+        assert_eq!(r.pastes, 2);
     }
 
     #[test]

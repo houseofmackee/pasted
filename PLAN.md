@@ -176,11 +176,12 @@ Done:
 - **Text cleanup on paste**: Paste As menu (17 transforms, only those that change the text are offered), optional automatic trimming and link tracking removal, Pasting settings tab, `pasted copy --as` and `pasted transform`.
 - **Snippet placeholders**: dates with offsets and formats, clipboard, uuid, cursor positioning, input fields with one dialog; pinboard items only, unknown braces untouched, escape with a backslash, Paste As > Without Placeholders, `pasted expand`.
 - **Rules**: conditions on app, item type and text pattern; actions expire after a duration or pin to a pinboard (pinned items never expire); Settings > Rules with an editor, invalid rules flagged, `pasted rules` and `pasted rules test`.
+- **Statistics window**: stat tiles, items added per day and by hour, types, top apps (tail folded into Other), most pasted; 7/30/90 day ranges; reference data-viz palette validated for both modes; tooltips and VoiceOver descriptions; `pasted stats --show`.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
-- Phase 5 improvements: encryption at rest, statistics view, MCP server, export.
+- Phase 5 improvements: encryption at rest, MCP server, export.
 - App icon, universal binary, notarization and DMG, Sparkle updates (needs the deferred bundle id and signing team).
 - Paste Stack ordering option (LIFO) and an explicit Accessibility onboarding window.
 

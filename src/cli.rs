@@ -99,8 +99,15 @@ pub enum Command {
     Prune,
     /// Fetch and print a link preview (debugging aid; nothing is stored).
     Preview { url: String },
-    /// Show storage statistics.
-    Stats,
+    /// Show statistics.
+    Stats {
+        /// Open the Statistics window of the running app instead.
+        #[arg(long)]
+        show: bool,
+        /// Days to summarize.
+        #[arg(long, default_value_t = 30)]
+        days: i64,
+    },
     /// Print data file locations.
     Paths,
 }
@@ -415,7 +422,22 @@ pub fn run(command: Command) -> Result<()> {
                 p.icon.as_ref().map(|i| format!("{} bytes", i.len())).unwrap_or("(none)".into())
             );
         }
-        Command::Stats => {
+        Command::Stats { show: true, .. } => {
+            let name = objc2_foundation::NSString::from_str(crate::app::STATS_NOTIFICATION);
+            // SAFETY: plain notification without object or user info.
+            unsafe {
+                objc2_foundation::NSDistributedNotificationCenter::defaultCenter()
+                    .postNotificationName_object_userInfo_deliverImmediately(&name, None, None, true)
+            };
+        }
+        Command::Stats { days, .. } => {
+            let r = store.report(days, now_ms())?;
+            println!("Added in the last {days} days: {} ({} in the {days} days before)", r.added, r.added_previous);
+            println!("Pasted with Pasted (all time): {}", r.pastes);
+            let busiest = r.per_day.iter().max_by_key(|(_, n)| *n).filter(|(_, n)| *n > 0);
+            if let Some((d, n)) = busiest {
+                println!("Busiest day: {} ({n} items)", d.format("%a %b %-d"));
+            }
             let s = store.stats()?;
             println!("Items: {} ({} in history)", s.items, s.history_items);
             println!("Pinboards: {}", s.pinboards);

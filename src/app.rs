@@ -52,6 +52,7 @@ const QUIT: u8 = 17;
 const CLEAR_HISTORY: u8 = 18;
 const PASTE_STACK: u8 = 19;
 const SETTINGS: u8 = 20;
+const STATISTICS: u8 = 21;
 pub const IMPORT_PASTE_TAG: u8 = IMPORT_PASTE;
 pub const CLEAR_HISTORY_TAG: u8 = CLEAR_HISTORY;
 pub const OPEN_SETTINGS_TAG: u8 = OPEN_SETTINGS;
@@ -75,6 +76,8 @@ const POLL_INTERVAL: f64 = 0.3;
 pub const OPEN_NOTIFICATION: &str = "io.pasted.app.open";
 /// Posted by `pasted settings` to show the Settings window.
 pub const SETTINGS_NOTIFICATION: &str = "io.pasted.app.settings";
+/// Posted by `pasted stats --show` to show the Statistics window.
+pub const STATS_NOTIFICATION: &str = "io.pasted.app.stats";
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(3600);
 
 define_class!(
@@ -121,6 +124,16 @@ define_class!(
                     app.open_shelf();
                 }
             });
+        }
+
+        #[unsafe(method(remoteStats:))]
+        fn remote_stats(&self, _notification: &NSNotification) {
+            with(|app| app.open_stats());
+        }
+
+        #[unsafe(method(statsRange:))]
+        fn stats_range(&self, _sender: Option<&AnyObject>) {
+            with(|app| app.refresh_stats());
         }
 
         #[unsafe(method(remoteSettings:))]
@@ -244,6 +257,7 @@ pub struct App {
     stack: Option<PasteStack>,
     pending_snippet: Option<PendingSnippet>,
     settings_window: Option<SettingsWindow>,
+    stats_window: Option<crate::ui::stats_window::StatsWindow>,
     /// Modification time of settings.toml when last read or written, to
     /// notice hand edits.
     settings_mtime: Option<std::time::SystemTime>,
@@ -319,6 +333,16 @@ pub fn run() -> Result<()> {
 
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    // Developer aid: force light or dark to check both without changing the system.
+    if let Ok(mode) = std::env::var("PASTED_APPEARANCE") {
+        // SAFETY: reading AppKit appearance name constants.
+        let name = unsafe {
+            if mode == "dark" { objc2_app_kit::NSAppearanceNameDarkAqua } else { objc2_app_kit::NSAppearanceNameAqua }
+        };
+        if let Some(appearance) = objc2_app_kit::NSAppearance::appearanceNamed(name) {
+            app.setAppearance(Some(&appearance));
+        }
+    }
     install_main_menu(mtm);
 
     let settings_path = crate::paths::settings_path()?;
@@ -363,6 +387,7 @@ pub fn run() -> Result<()> {
         stack: None,
         pending_snippet: None,
         settings_window: None,
+        stats_window: None,
         settings_mtime: settings_mtime(),
         last_settings_check: Instant::now(),
         rules: crate::rules::Rules::new(&[]).0,
@@ -404,6 +429,15 @@ pub fn run() -> Result<()> {
                 &app.target,
                 sel!(remoteSettings:),
                 Some(&ns(SETTINGS_NOTIFICATION)),
+                None,
+            )
+        };
+        // SAFETY: as above.
+        unsafe {
+            NSDistributedNotificationCenter::defaultCenter().addObserver_selector_name_object(
+                &app.target,
+                sel!(remoteStats:),
+                Some(&ns(STATS_NOTIFICATION)),
                 None,
             )
         };
@@ -567,6 +601,26 @@ impl App {
         }
     }
 
+    fn open_stats(&mut self) {
+        self.close_shelf();
+        if self.stats_window.is_none() {
+            let t: &AnyObject = &self.target;
+            self.stats_window = Some(crate::ui::stats_window::StatsWindow::new(t, self.mtm));
+        }
+        self.refresh_stats();
+        if let Some(win) = &self.stats_window {
+            win.show(self.mtm);
+        }
+    }
+
+    fn refresh_stats(&mut self) {
+        let Some(win) = &mut self.stats_window else { return };
+        match self.store.report(win.days(), now_ms()) {
+            Ok(report) => win.update(&report),
+            Err(e) => tracing::error!("statistics failed: {e:#}"),
+        }
+    }
+
     fn open_settings(&mut self) {
         self.close_shelf();
         if self.settings_window.is_none() {
@@ -637,6 +691,7 @@ impl App {
         add("Import from Paste\u{2026}", IMPORT_PASTE);
         add("Clear History\u{2026}", CLEAR_HISTORY);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        add("Statistics\u{2026}", STATISTICS);
         add("Settings\u{2026}", SETTINGS);
         if !crate::paste::is_trusted() {
             add("Grant Accessibility Permission\u{2026}", ACCESSIBILITY);
@@ -1418,6 +1473,9 @@ fn dispatch(raw_tag: isize) {
         }
         CLEAR_HISTORY => clear_history(),
         OPEN_SETTINGS => open_settings_file(),
+        STATISTICS => {
+            with(|app| app.open_stats());
+        }
         SETTINGS => {
             with(|app| app.open_settings());
         }

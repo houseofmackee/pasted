@@ -15,6 +15,7 @@ Everything stays on your Mac: no accounts and no telemetry. The only network acc
 - Optional automatic cleanup on every paste: trim whitespace and remove link tracking parameters (both off by default)
 - Snippet placeholders in pinboard items, expanded when pasting (see below)
 - Rules that expire or pin new copies automatically (see below)
+- Statistics window: items added per day and by time of day, types, top apps and most pasted items, over 7, 30 or 90 days, in light and dark mode
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -105,7 +106,7 @@ pasted import paste --dry-run     # preview an import from Paste
 pasted open                       # show the shelf of the running app
 pasted settings --tab privacy     # show a Settings tab
 pasted preview <url>              # fetch a link preview (debugging)
-pasted stats
+pasted stats [--days 30]          # summary in the terminal; --show opens the Statistics window
 pasted paths
 ```
 

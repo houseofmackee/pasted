@@ -1,4 +1,5 @@
 pub mod card;
+pub mod chart;
 pub mod dialogs;
 pub mod icons;
 pub mod preview;
@@ -7,6 +8,7 @@ pub mod rule_editor;
 pub mod settings_window;
 pub mod shelf;
 pub mod stack_panel;
+pub mod stats_window;
 
 use objc2::rc::Retained;
 use objc2_app_kit::{NSColor, NSFont, NSLineBreakMode, NSTextField};
