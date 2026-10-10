@@ -179,12 +179,12 @@ Done:
 - **Statistics window**: stat tiles, items added per day and by hour, types, top apps (tail folded into Other), most pasted; 7/30/90 day ranges; reference data-viz palette validated for both modes; tooltips and VoiceOver descriptions; `pasted stats --show`.
 - **Export and restore**: ZIP backup (manifest plus content-addressed data files, verified by hash on restore, size-limited entries), JSON and CSV, `--board` and `--query` filters, Settings > Data Export and Restore Backup running in the background; restore keeps duplicates within a backup and skips content already present.
 - **Encryption at rest** (opt-in): SQLCipher via CommonCrypto (no OpenSSL), AES-256-GCM sealed blob files with keyed names, master key in the Keychain with derived subkeys, encryption detected from the files, conversion builds a copy and swaps it in, workers gated during the switch; Settings > Privacy and `pasted encryption`.
+- **MCP server**: `pasted mcp`, dual-era (2026-07-28 stateless with `server/discover`, plus `initialize` for 2025-11-25 and earlier), read-only tools with `readOnlyHint`, structured output, access off by default and limited by history/pinboard/type settings, per-request access log, Settings > AI with setup helpers.
 - **Phase 6 (partial)**: `scripts/bundle.sh` builds and signs `dist/Pasted.app`; launch at login through `SMAppService`.
 
 Next:
 
 Features
-- MCP server: local, read access to history limited to allowed pinboards and item types.
 - Sensitive item auto-expiry: keep secret-looking items for N minutes instead of never saving them (opt-in).
 - Fuzzy search mode for short queries, alongside FTS.
 - Per-device statistics (device names exist for imported Paste history).

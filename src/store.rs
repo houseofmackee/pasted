@@ -1021,6 +1021,27 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    pub fn item_pinboard_names_for(&self, item_id: i64) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT p.name FROM pinboard_items pi JOIN pinboards p ON p.id = pi.pinboard_id
+             WHERE pi.item_id = ?1 ORDER BY p.sort",
+        )?;
+        let rows = stmt.query_map([item_id], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn item_in_history(&self, item_id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT in_history FROM items WHERE id = ?1", [item_id], |r| r.get(0))
+            .optional()?
+            .unwrap_or(false))
+    }
+
+    pub fn ocr_text(&self, item_id: i64) -> Result<Option<String>> {
+        Ok(self.conn.query_row("SELECT text FROM ocr WHERE item_id = ?1", [item_id], |r| r.get(0)).optional()?)
+    }
+
     pub fn all_checksums(&self) -> Result<HashSet<String>> {
         let mut stmt = self.conn.prepare("SELECT DISTINCT checksum FROM items")?;
         let rows = stmt.query_map([], |r| r.get(0))?;

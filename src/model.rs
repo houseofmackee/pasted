@@ -29,6 +29,10 @@ pub enum ItemKind {
 }
 
 impl ItemKind {
+    /// Kinds that can be shared with AI tools (images and files are not readable as text).
+    pub const ALL_FOR_MCP: [ItemKind; 5] =
+        [ItemKind::Text, ItemKind::RichText, ItemKind::Link, ItemKind::Code, ItemKind::Color];
+
     pub fn as_str(self) -> &'static str {
         match self {
             ItemKind::Text => "text",

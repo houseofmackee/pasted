@@ -10,6 +10,7 @@ mod hotkeys;
 mod import;
 mod link_preview;
 mod login_item;
+mod mcp;
 mod model;
 mod ocr;
 mod paste;

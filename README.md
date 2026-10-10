@@ -17,6 +17,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Rules that expire or pin new copies automatically (see below)
 - Statistics window: items added per day and by time of day, types, top apps and most pasted items, over 7, 30 or 90 days, in light and dark mode
 - Export to a restorable ZIP backup, JSON or CSV
+- Optional read-only access for AI tools such as Claude and Cursor through a local MCP server (off by default)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers, supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
@@ -110,6 +111,7 @@ pasted preview <url>              # fetch a link preview (debugging)
 pasted export backup.zip         # also .json or .csv; --board and --query filter
 pasted import archive backup.zip # restore a backup
 pasted encryption [status|enable|disable]
+pasted mcp                        # read-only MCP server for AI tools (see below)
 pasted stats [--days 30]          # summary in the terminal; --show opens the Statistics window
 pasted paths
 ```
@@ -135,6 +137,24 @@ Turn it on in Settings > Privacy > Encryption, or with `pasted encryption enable
 - encrypts each stored image and file with AES-256-GCM under a name that does not reveal its content.
 
 This keeps other apps, other user accounts and backups (Time Machine, synced folders) from reading your history. Know the limits: if the Keychain item is deleted the history cannot be recovered; exports and backups you make are not encrypted; FileVault already protects the disk while the Mac is off; and unencrypted copies from before you turned it on may remain in free disk space until it is reused.
+
+## AI tools (MCP)
+
+`pasted mcp` is a local, read-only [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout. It speaks MCP 2026-07-28 and, for clients that still use the `initialize` handshake, 2025-11-25, 2025-06-18 and 2025-03-26. Tools: `search_clipboard` (same filters as the shelf), `recent_clipboard`, `get_clipboard_item` and `list_pinboards`.
+
+Access is **off by default**. Turn it on in Settings > AI, where you also choose whether clipboard history is included or only pinboards, which pinboards, which item types, and the most results per request. Images and files are never shared. Every request is appended to `mcp.log` in the data folder (Settings > AI > Open Access Log).
+
+Settings > AI copies the setup for you. By hand:
+
+```sh
+claude mcp add pasted -- /Applications/Pasted.app/Contents/MacOS/pasted mcp
+```
+
+Claude Desktop (`claude_desktop_config.json`):
+
+```json
+{ "mcpServers": { "pasted": { "command": "/Applications/Pasted.app/Contents/MacOS/pasted", "args": ["mcp"] } } }
+```
 
 ## Export and backup
 

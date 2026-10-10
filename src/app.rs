@@ -1670,6 +1670,41 @@ fn dispatch(raw_tag: isize) {
         settings_window::ADD_RULE => edit_rule(None),
         settings_window::EXPORT => export_history(),
         settings_window::TOGGLE_ENCRYPTION => toggle_encryption(),
+        settings_window::COPY_CLAUDE_CODE | settings_window::COPY_DESKTOP_CONFIG => {
+            let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "pasted".into());
+            let text = if code == settings_window::COPY_CLAUDE_CODE {
+                format!("claude mcp add pasted -- \"{exe}\" mcp")
+            } else {
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "mcpServers": { "pasted": { "command": exe, "args": ["mcp"] } }
+                }))
+                .unwrap_or_default()
+            };
+            with(|app| {
+                let cc = pasteboard::write_text(&app.pasteboard, &text);
+                // Not captured into history: it is a setup snippet, not something the user copied.
+                app.own_change = Some(cc);
+                app.last_change = cc;
+            });
+            let (title, message) = if code == settings_window::COPY_CLAUDE_CODE {
+                ("Command copied", "Paste it into Terminal to add Pasted to Claude Code.")
+            } else {
+                (
+                    "Configuration copied",
+                    "In Claude Desktop, open Settings > Developer > Edit Config and merge this into claude_desktop_config.json, then restart Claude Desktop.",
+                )
+            };
+            run_modal(|mtm| dialogs::info(title, message, mtm));
+        }
+        settings_window::OPEN_MCP_LOG => {
+            if let Ok(dir) = crate::paths::data_dir() {
+                let log = dir.join("mcp.log");
+                if !log.exists() {
+                    let _ = std::fs::write(&log, "");
+                }
+                let _ = std::process::Command::new("open").arg("-t").arg(&log).spawn();
+            }
+        }
         settings_window::RESTORE => restore_backup(),
         settings_window::EDIT_RULE => {
             if let Some(row) = with(|app| app.settings_window.as_ref().and_then(|w| w.selected_rule_row())).flatten() {

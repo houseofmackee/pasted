@@ -117,6 +117,8 @@ pub enum Command {
         #[command(subcommand)]
         command: Option<EncryptionCommand>,
     },
+    /// Run the read-only MCP server on stdin/stdout for AI tools (Claude, Cursor, ...).
+    Mcp,
     /// Show statistics.
     Stats {
         /// Open the Statistics window of the running app instead.
@@ -214,9 +216,26 @@ fn require(store: &Store, id: i64) -> Result<Item> {
 }
 
 pub fn run(command: Command) -> Result<()> {
-    let mut store = Store::open_default()?;
+    // Commands that only signal the running app, transform text, or manage
+    // encryption must not open (or create) the history database.
+    let needs_store = !matches!(
+        command,
+        Command::Mcp
+            | Command::Open
+            | Command::Settings { .. }
+            | Command::Stats { show: true, .. }
+            | Command::Expand { .. }
+            | Command::Transform { .. }
+            | Command::Preview { .. }
+            | Command::Encryption { .. }
+    );
+    let mut store = if needs_store { Store::open_default()? } else { Store::placeholder()? };
     match command {
         Command::Run => unreachable!("handled in main"),
+        Command::Mcp => {
+            drop(store);
+            return crate::mcp::serve();
+        }
         Command::Open | Command::Settings { .. } => {
             let (name, object) = match &command {
                 Command::Settings { tab } => (crate::app::SETTINGS_NOTIFICATION, tab.clone()),

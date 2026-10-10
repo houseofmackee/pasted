@@ -38,7 +38,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    s.len().is_multiple_of(2)
+    s.len()
+        .is_multiple_of(2)
         .then(|| (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect())
         .flatten()
 }

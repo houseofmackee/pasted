@@ -45,6 +45,10 @@ pub const REMOVE_RULE: u8 = 68;
 pub const EXPORT: u8 = 69;
 pub const RESTORE: u8 = 70;
 pub const TOGGLE_ENCRYPTION: u8 = 71;
+pub const COPY_CLAUDE_CODE: u8 = 72;
+pub const COPY_DESKTOP_CONFIG: u8 = 73;
+pub const OPEN_MCP_LOG: u8 = 74;
+const MCP_LIMITS: &[usize] = &[10, 25, 50];
 
 pub struct RecorderIvars {
     shortcut: Cell<Option<Shortcut>>,
@@ -277,6 +281,11 @@ pub struct SettingsWindow {
     rules_status: Retained<NSTextField>,
     encryption: Retained<NSTextField>,
     encryption_toggle: Retained<NSButton>,
+    mcp_enabled: Retained<NSButton>,
+    mcp_history: Retained<NSButton>,
+    mcp_kinds: Vec<(crate::model::ItemKind, Retained<NSButton>)>,
+    mcp_boards: Retained<NSTextField>,
+    mcp_limit: Retained<NSPopUpButton>,
     patterns: Retained<NSTextView>,
     patterns_status: Retained<NSTextField>,
     stats: Retained<NSTextField>,
@@ -636,6 +645,63 @@ impl SettingsWindow {
         );
         add_tab("Rules", &f.view);
 
+        // AI
+        let mut f = Form::new(mtm);
+        let mcp_enabled = checkbox("Let AI tools read my clipboard (MCP, read-only)", target, mtm);
+        let y = f.row("Access:", 20.0);
+        mcp_enabled.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 40.0, 20.0));
+        f.add(&mcp_enabled);
+        let mcp_history = checkbox("Include clipboard history, not only pinboards", target, mtm);
+        let y = f.row("", 20.0);
+        mcp_history.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 40.0, 20.0));
+        f.add(&mcp_history);
+        let kinds_view = NSView::initWithFrame(NSView::alloc(mtm), rect(0.0, 0.0, 360.0, 44.0));
+        let mut mcp_kinds = Vec::new();
+        for (i, kind) in crate::model::ItemKind::ALL_FOR_MCP.iter().enumerate() {
+            let b = checkbox(kind.label(), target, mtm);
+            let (col, line) = (i % 4, i / 4);
+            b.setFrame(rect(col as f64 * 92.0, 24.0 - line as f64 * 22.0, 92.0, 20.0));
+            kinds_view.addSubview(&b);
+            mcp_kinds.push((*kind, b));
+        }
+        let y = f.row("Types:", 44.0);
+        kinds_view.setFrame(rect(CONTROL_X, y, 370.0, 44.0));
+        f.add(&kinds_view);
+        let mcp_boards = NSTextField::initWithFrame(NSTextField::alloc(mtm), rect(0.0, 0.0, 300.0, 24.0));
+        mcp_boards.setPlaceholderString(Some(&ns("All pinboards (or names, separated by commas)")));
+        // SAFETY: the target implements `settingsChanged:`.
+        unsafe {
+            mcp_boards.setTarget(Some(target));
+            mcp_boards.setAction(Some(sel!(settingsChanged:)));
+        }
+        let y = f.row("Pinboards:", 24.0);
+        mcp_boards.setFrame(rect(CONTROL_X, y, 330.0, 24.0));
+        f.add(&mcp_boards);
+        let mcp_limit = popup(&MCP_LIMITS.iter().map(|n| format!("{n} items")).collect::<Vec<_>>(), target, mtm);
+        let y = f.row("Most results per request:", 26.0);
+        mcp_limit.setFrame(rect(CONTROL_X, y, 120.0, 26.0));
+        f.add(&mcp_limit);
+        let y = f.row("Set up:", 30.0);
+        let mut bx = CONTROL_X - 6.0;
+        for (title, code) in
+            [("Copy for Claude Code", COPY_CLAUDE_CODE), ("Copy for Claude Desktop", COPY_DESKTOP_CONFIG)]
+        {
+            let b = button(title, tag(code, 0), target, mtm);
+            b.setFrame(rect(bx, y, b.frame().size.width, 30.0));
+            bx += b.frame().size.width;
+            f.add(&b);
+        }
+        let log = button("Open Access Log", tag(OPEN_MCP_LOG, 0), target, mtm);
+        let y = f.row("", 30.0);
+        log.setFrame(rect(CONTROL_X - 6.0, y, log.frame().size.width, 30.0));
+        f.add(&log);
+        f.note(
+            "AI apps like Claude and Cursor run `pasted mcp`. They can only search and read what is allowed \
+             here, never change anything, and every request is logged.",
+            CONTROL_X,
+        );
+        add_tab("AI", &f.view);
+
         // Data
         let mut f = Form::new(mtm);
         let stats = label("", 13.0, false, mtm);
@@ -729,6 +795,11 @@ impl SettingsWindow {
             rules_status,
             encryption,
             encryption_toggle: toggle,
+            mcp_enabled,
+            mcp_history,
+            mcp_kinds,
+            mcp_boards,
+            mcp_limit,
             patterns,
             patterns_status,
             stats,
@@ -748,7 +819,7 @@ impl SettingsWindow {
 
     /// Selects a tab by its (case-insensitive) label.
     pub fn select_tab(&self, name: &str) {
-        let index = ["general", "pasting", "shortcuts", "privacy", "rules", "data"]
+        let index = ["general", "pasting", "shortcuts", "privacy", "rules", "ai", "data"]
             .iter()
             .position(|t| t.eq_ignore_ascii_case(name));
         if let Some(i) = index {
@@ -779,6 +850,15 @@ impl SettingsWindow {
         set_checked(&self.ignore_concealed, p.ignore_concealed);
         set_checked(&self.ignore_secrets, p.ignore_secrets);
         set_checked(&self.visible_sharing, p.visible_during_screen_sharing);
+        let m = &s.mcp;
+        set_checked(&self.mcp_enabled, m.enabled);
+        set_checked(&self.mcp_history, m.include_history);
+        for (kind, b) in &self.mcp_kinds {
+            set_checked(b, m.kinds.iter().any(|k| crate::model::ItemKind::parse(k) == Some(*kind)));
+        }
+        self.mcp_boards.setStringValue(&ns(&m.pinboards.join(", ")));
+        let li = MCP_LIMITS.iter().position(|n| *n >= m.max_results).unwrap_or(MCP_LIMITS.len() - 1);
+        self.mcp_limit.selectItemAtIndex(li as isize);
         let im = &s.import;
         set_checked(&self.skip_excluded_apps, im.skip_excluded_apps);
         set_checked(&self.skip_secrets, im.skip_secrets);
@@ -846,6 +926,21 @@ impl SettingsWindow {
         p.ignore_concealed = checked(&self.ignore_concealed);
         p.ignore_secrets = checked(&self.ignore_secrets);
         p.visible_during_screen_sharing = checked(&self.visible_sharing);
+        let m = &mut s.mcp;
+        m.enabled = checked(&self.mcp_enabled);
+        m.include_history = checked(&self.mcp_history);
+        m.kinds = self.mcp_kinds.iter().filter(|(_, b)| checked(b)).map(|(k, _)| k.as_str().to_string()).collect();
+        m.pinboards = self
+            .mcp_boards
+            .stringValue()
+            .to_string()
+            .split(',')
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty())
+            .collect();
+        if let Some(n) = MCP_LIMITS.get(self.mcp_limit.indexOfSelectedItem().max(0) as usize) {
+            m.max_results = *n;
+        }
         let im = &mut s.import;
         im.skip_excluded_apps = checked(&self.skip_excluded_apps);
         im.skip_secrets = checked(&self.skip_secrets);

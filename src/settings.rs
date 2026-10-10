@@ -189,6 +189,8 @@ pub struct Settings {
     pub privacy: Privacy,
     pub pasting: Pasting,
     pub import: ImportFilter,
+    /// What AI tools may read through `pasted mcp`; off by default.
+    pub mcp: crate::mcp::McpSettings,
     /// Expire or pin new clips; see `crate::rules`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<crate::rules::Rule>,
