@@ -1,0 +1,91 @@
+name: Release
+
+# Builds, signs and publishes a release when a version tag is pushed:
+#   git tag v0.3.0 && git push origin v0.3.0
+# Tags with a hyphen (v0.3.0-beta.1) become pre-releases.
+#
+# Needs two repository secrets, from the "Pasted Release Signing" identity
+# (see scripts/create_release_cert.sh):
+#   RELEASE_CERT_P12_BASE64  the certificate and key, as base64
+#   RELEASE_CERT_PASSWORD    its password
+# Every release must be signed with the same certificate: its signature is
+# what keeps users' Accessibility permission across updates.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check the tag matches the version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $version"
+            exit 1
+          fi
+
+      - name: Import the signing certificate
+        env:
+          P12_BASE64: ${{ secrets.RELEASE_CERT_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.RELEASE_CERT_PASSWORD }}
+        run: |
+          if [ -z "$P12_BASE64" ] || [ -z "$P12_PASSWORD" ]; then
+            echo "::error::RELEASE_CERT_P12_BASE64 and RELEASE_CERT_PASSWORD must be set"
+            exit 1
+          fi
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          echo "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/release.p12"
+          security import "$RUNNER_TEMP/release.p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/release.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" > /dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          security find-identity -p codesigning "$keychain"
+
+      - name: Build and package
+        env:
+          SIGN_IDENTITY: Pasted Release Signing
+        run: scripts/dist.sh
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes="$RUNNER_TEMP/notes.md"
+          cat > "$notes" <<NOTES
+          ## Installing
+
+          Download \`Pasted-$version-arm64.dmg\` (or the zip), open it and drag Pasted into Applications. Pasted is open source and not notarized by Apple yet, so macOS blocks it the first time:
+
+          1. Open Pasted once and click Done in the warning.
+          2. Open System Settings > Privacy & Security, scroll down and click **Open Anyway** next to Pasted.
+
+          Or, in Terminal: \`xattr -dr com.apple.quarantine /Applications/Pasted.app\`
+
+          Requires macOS 14 or later on Apple silicon. Checksums are in \`SHA256SUMS.txt\`. Signed with the "Pasted Release Signing" certificate, so the Accessibility permission carries over from 0.2.1 and later.
+          NOTES
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" $prerelease --generate-notes --notes-file "$notes" \
+            --title "Pasted $version" \
+            dist/Pasted-$version-arm64.dmg dist/Pasted-$version-arm64.zip dist/SHA256SUMS.txt
+
+      - name: Remove the temporary keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true

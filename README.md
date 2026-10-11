@@ -26,7 +26,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 
 ## Install
 
-Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), check it against the `.sha256` file next to it (`shasum -a 256 -c Pasted-<version>-arm64.dmg.sha256`), open it and drag Pasted into Applications.
+Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), check it against `SHA256SUMS.txt` from the same release (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`; older releases have a `.sha256` file instead), open it and drag Pasted into Applications.
 
 Pasted is not notarized yet, so macOS blocks the first launch. Open it once, click Done, then click **Open Anyway** in System Settings > Privacy & Security. If that button does not appear, run `xattr -dr com.apple.quarantine /Applications/Pasted.app`. The DMG includes these steps in "Read Me First.txt".
 
@@ -40,6 +40,7 @@ Requires an Apple silicon Mac with macOS 14 or later and a Rust toolchain.
 cargo run --release            # run from the terminal
 scripts/bundle.sh              # build and sign dist/Pasted.app (release certificate if present, else ad hoc)
 scripts/make_dmg.sh            # build dist/Pasted-<version>-arm64.dmg and its .sha256, then mount and check it
+scripts/dist.sh                # make_dmg.sh, plus a zip and SHA256SUMS.txt: everything a release uploads
 scripts/make_icon.sh           # rebuild macos/AppIcon.icns after editing macos/AppIcon.svg (needs librsvg)
 open dist/Pasted.app
 ```
@@ -254,6 +255,18 @@ cargo bench --bench store      # capture and search benchmarks (search budget: 2
 ```
 
 The pasteboard tests use private, uniquely named pasteboards and never touch your clipboard. The card layout test (`tests/card_layout.rs`) builds a real card for each kind of item and compares every subview's frame and text with `tests/snapshots/card_layout.txt`; after an intended change, review the diff and run `UPDATE_SNAPSHOTS=1 cargo test --test card_layout`. Before a release, work through [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+
+GitHub Actions runs `cargo fmt --check`, `cargo clippy -D warnings` (debug and release), `cargo test`, a bundle build and `cargo deny check` (see `deny.toml`) on every push to master and every pull request.
+
+### Releasing
+
+Releases are built and published by GitHub Actions, not from a local machine. Bump the version in `Cargo.toml` (and `CFBundleVersion` in `macos/Info.plist`), commit, then push a matching tag:
+
+```sh
+git tag v0.3.0 && git push origin master v0.3.0
+```
+
+`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the "Pasted Release Signing" certificate from the repository secrets `RELEASE_CERT_P12_BASE64` and `RELEASE_CERT_PASSWORD`, runs `scripts/dist.sh` and publishes the DMG, zip and `SHA256SUMS.txt`. Tags with a hyphen (`v0.3.0-beta.1`) become pre-releases. Do not create releases by hand with `gh release create`.
 
 See [PLAN.md](PLAN.md) for the roadmap.
 

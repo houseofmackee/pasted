@@ -7,8 +7,10 @@ Work through this for every release, on an Apple silicon Mac. Copy it into the r
 - [ ] `cargo fmt --check` and `cargo clippy --all-targets` are clean.
 - [ ] `cargo test` passes, including the pasteboard integration tests and the card layout snapshot (`tests/card_layout.rs`). If the snapshot changed on purpose, review the diff and run `UPDATE_SNAPSHOTS=1 cargo test --test card_layout`.
 - [ ] `cargo bench --bench store`: every search line says `ok` (20 ms budget at 100,000 items). Note the numbers in the release issue to spot regressions.
-- [ ] Version bumped in `Cargo.toml` and `CFBundleVersion` in `macos/Info.plist`; `scripts/make_dmg.sh` succeeds and prints the checksum.
-- [ ] The build is signed with the release certificate, not ad hoc: `scripts/bundle.sh` prints `certificate root = H"d1099b0b0d7763351358843583c6a08fbbe70d41"` (otherwise users lose their Accessibility permission).
+- [ ] CI is green on master (it also runs `cargo deny check`).
+- [ ] Version bumped in `Cargo.toml` and `CFBundleVersion` in `macos/Info.plist`; `scripts/dist.sh` succeeds locally and prints the checksums.
+- [ ] Push the tag (`git tag vX.Y.Z && git push origin master vX.Y.Z`); the Release workflow passes and the release has the DMG, zip and `SHA256SUMS.txt`.
+- [ ] The published build is signed with the release certificate, not ad hoc: `codesign -dr - /Applications/Pasted.app` shows `certificate root = H"d1099b0b0d7763351358843583c6a08fbbe70d41"` (otherwise users lose their Accessibility permission).
 - [ ] After installing over the previous release, Accessibility is still allowed (welcome window shows "Allowed") without granting it again.
 
 ## 2. Install from the DMG
@@ -16,7 +18,7 @@ Work through this for every release, on an Apple silicon Mac. Copy it into the r
 Use the DMG itself, downloaded the way users get it (so it carries the quarantine flag), on a Mac or user account without a previous install where possible.
 
 - [ ] The DMG opens and shows Pasted, the Applications link and "Read Me First.txt".
-- [ ] After dragging to Applications, the first launch is blocked; the steps in "Read Me First.txt" open it. The checksum matches the `.sha256` file.
+- [ ] After dragging to Applications, the first launch is blocked; the steps in "Read Me First.txt" open it. The checksum matches `SHA256SUMS.txt`.
 - [ ] The welcome window appears once, with the correct shortcut. Accessibility status changes to Allowed within a few seconds of granting it, without restarting.
 - [ ] Upgrading over the previous release keeps history, pinboards, settings and (if enabled) encryption.
 - [ ] Launch at login works after a restart.
