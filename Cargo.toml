@@ -1,6 +1,6 @@
 [package]
 name = "pasted"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "A fast, private clipboard manager for macOS"
 license = "MIT OR Apache-2.0"
