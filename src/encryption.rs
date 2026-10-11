@@ -297,6 +297,22 @@ mod tests {
     use super::*;
     use crate::search::Query;
     use crate::store::Store;
+
+    /// Fixed vectors made with the original crates (aes-gcm 0.10, hmac 0.12,
+    /// sha2 0.10) and checked with Python's hmac and Apple's CryptoKit. Any
+    /// crate update must reproduce them, or existing encrypted history
+    /// could no longer be opened.
+    #[test]
+    fn existing_encrypted_data_still_opens() {
+        let k = Keys::from_master(&[7u8; 32]);
+        assert_eq!(k.sqlcipher_key(), "x'a44d028f0c0650a4f41916b03be0771c836f586076006cdc87b6f435509571bb'");
+        assert_eq!(k.blob_name(b"hello"), "5953e7b98974a142dde739df34290d794103807af755b611c04f91fc97a8764f");
+        let sealed = "50535444454e4331cdffda96f005edc790cf05bbf417a0f280a193622a6593d01b6ffcc0cdf4dc4b1325f8aa6231e5a81a851a43f8bf";
+        let bytes: Vec<u8> =
+            (0..sealed.len()).step_by(2).map(|i| u8::from_str_radix(&sealed[i..i + 2], 16).unwrap()).collect();
+        assert_eq!(k.open(&bytes).unwrap(), b"pasted golden blob");
+        assert_eq!(k.open(&k.seal(b"round trip").unwrap()).unwrap(), b"round trip");
+    }
     use crate::store::tests::text_item;
 
     fn keys() -> Keys {
