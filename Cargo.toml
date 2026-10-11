@@ -23,7 +23,7 @@ clap = { version = "4", features = ["derive"] }
 dirs = "6"
 flate2 = "1"
 getrandom = "0.3"
-hmac = "0.12"
+hmac = "0.13"
 libc = "0.2"
 lzfse_rust = "0.2"
 nucleo-matcher = "0.3.1"
