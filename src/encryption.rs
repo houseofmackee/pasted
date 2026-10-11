@@ -58,7 +58,7 @@ impl std::fmt::Debug for Keys {
 }
 
 fn derive(master: &[u8; 32], label: &str) -> [u8; 32] {
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(master).expect("HMAC takes any key length");
+    let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(master).expect("HMAC takes any key length");
     mac.update(b"pasted:");
     mac.update(label.as_bytes());
     mac.finalize().into_bytes().into()
@@ -82,7 +82,7 @@ impl Keys {
 
     /// File name for blob content: keyed, so it does not reveal the content hash.
     pub fn blob_name(&self, data: &[u8]) -> String {
-        let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&self.name).expect("any key length");
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.name).expect("any key length");
         mac.update(data);
         hex(&mac.finalize().into_bytes())
     }
@@ -91,7 +91,7 @@ impl Keys {
         let mut nonce = [0u8; NONCE_LEN];
         getrandom::fill(&mut nonce).map_err(|e| anyhow!("random nonce: {e}"))?;
         let cipher = Aes256Gcm::new_from_slice(&self.blob).expect("32-byte key");
-        let sealed = cipher.encrypt(Nonce::from_slice(&nonce), data).map_err(|_| anyhow!("encryption failed"))?;
+        let sealed = cipher.encrypt(&Nonce::from(nonce), data).map_err(|_| anyhow!("encryption failed"))?;
         let mut out = Vec::with_capacity(MAGIC.len() + NONCE_LEN + sealed.len());
         out.extend_from_slice(MAGIC);
         out.extend_from_slice(&nonce);
@@ -103,10 +103,11 @@ impl Keys {
         if !is_sealed(sealed) || sealed.len() < MAGIC.len() + NONCE_LEN {
             bail!("not an encrypted Pasted file");
         }
-        let nonce = &sealed[MAGIC.len()..MAGIC.len() + NONCE_LEN];
+        let nonce: [u8; NONCE_LEN] =
+            sealed[MAGIC.len()..MAGIC.len() + NONCE_LEN].try_into().expect("length checked above");
         let cipher = Aes256Gcm::new_from_slice(&self.blob).expect("32-byte key");
         cipher
-            .decrypt(Nonce::from_slice(nonce), &sealed[MAGIC.len() + NONCE_LEN..])
+            .decrypt(&Nonce::from(nonce), &sealed[MAGIC.len() + NONCE_LEN..])
             .map_err(|_| anyhow!("decryption failed: wrong key or damaged file"))
     }
 }
