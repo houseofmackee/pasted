@@ -57,3 +57,7 @@ Open the shelf with the shortcut in each situation, then paste into the frontmos
 - [ ] VoiceOver: cards are read with type, app, age and position; sensitive items are not read out; search results and selection are announced.
 - [ ] Reduce Motion: windows appear without animation. Increase Contrast: cards show borders.
 - [ ] Keyboard only: every window can be used and closed without the mouse.
+
+## 7. Publish
+
+- [ ] Everything above passed: on GitHub, edit the release (published as a pre-release) and untick "Set as a pre-release" so it becomes the latest release.

@@ -266,7 +266,7 @@ Releases are built and published by GitHub Actions, not from a local machine. Bu
 git tag v0.3.0 && git push origin master v0.3.0
 ```
 
-`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the "Pasted Release Signing" certificate from the repository secrets `RELEASE_CERT_P12_BASE64` and `RELEASE_CERT_PASSWORD`, runs `scripts/dist.sh` and publishes the DMG, zip and `SHA256SUMS.txt`. Tags with a hyphen (`v0.3.0-beta.1`) become pre-releases. Do not create releases by hand with `gh release create`.
+`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the "Pasted Release Signing" certificate from the repository secrets `RELEASE_CERT_P12_BASE64` and `RELEASE_CERT_PASSWORD`, runs `scripts/dist.sh` and publishes the DMG, zip and `SHA256SUMS.txt`. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
 
 See [PLAN.md](PLAN.md) for the roadmap.
 

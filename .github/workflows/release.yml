@@ -2,7 +2,8 @@ name: Release
 
 # Builds, signs and publishes a release when a version tag is pushed:
 #   git tag v0.3.0 && git push origin v0.3.0
-# Tags with a hyphen (v0.3.0-beta.1) become pre-releases.
+# Every release is published as a pre-release; mark it as a regular release
+# on GitHub once the manual checks in docs/RELEASE_CHECKLIST.md are done.
 #
 # Needs two repository secrets, from the "Pasted Release Signing" identity
 # (see scripts/create_release_cert.sh):
@@ -80,9 +81,7 @@ jobs:
 
           Requires macOS 14 or later on Apple silicon. Checksums are in \`SHA256SUMS.txt\`. Signed with the "Pasted Release Signing" certificate, so the Accessibility permission carries over from 0.2.1 and later.
           NOTES
-          prerelease=""
-          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" $prerelease --generate-notes --notes-file "$notes" \
+          gh release create "$GITHUB_REF_NAME" --prerelease --generate-notes --notes-file "$notes" \
             --title "Pasted $version" \
             dist/Pasted-$version-arm64.dmg dist/Pasted-$version-arm64.zip dist/SHA256SUMS.txt
 
