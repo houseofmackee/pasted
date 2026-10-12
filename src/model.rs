@@ -221,7 +221,16 @@ pub struct Pinboard {
     pub name: String,
     /// ARGB color.
     pub color: u32,
+    /// Pinned items (always 0 for smart pinboards).
     pub item_count: i64,
+    /// Saved search of a smart pinboard; `None` for a regular one.
+    pub query: Option<String>,
+}
+
+impl Pinboard {
+    pub fn is_smart(&self) -> bool {
+        self.query.is_some()
+    }
 }
 
 pub fn relative_time(ms: i64) -> String {

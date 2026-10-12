@@ -216,7 +216,9 @@ fn sources(store: &Store, access: &Access, query: &Query) -> Result<Vec<Query>> 
     if access.rules.include_history {
         out.push(query.clone());
     }
-    for board in store.pinboards()? {
+    // Smart pinboards are searches over history, which the history search
+    // above already covers (and which they must not open up when it is not shared).
+    for board in store.pinboards()?.into_iter().filter(|b| !b.is_smart()) {
         if access.board_allowed(&board.name) {
             out.push(Query { board_id: Some(board.id), ..query.clone() });
         }
@@ -341,13 +343,27 @@ fn call_tool(store: &Store, access: &Access, name: &str, args: &Value) -> std::r
         }
         "list_pinboards" => {
             let boards = store.pinboards().map_err(fail)?;
-            let shared: Vec<_> = boards.into_iter().filter(|b| access.board_allowed(&b.name)).collect();
+            // Smart pinboards search history, so they only make sense when history is shared.
+            let shared: Vec<_> = boards
+                .into_iter()
+                .filter(|b| access.board_allowed(&b.name) && (!b.is_smart() || access.rules.include_history))
+                .collect();
             let text = if shared.is_empty() {
                 "No pinboards are shared with AI tools.".to_string()
             } else {
-                shared.iter().map(|b| format!("{} ({} items)", b.name, b.item_count)).collect::<Vec<_>>().join("\n")
+                shared
+                    .iter()
+                    .map(|b| match &b.query {
+                        Some(q) => format!("{} (smart: {q})", b.name),
+                        None => format!("{} ({} items)", b.name, b.item_count),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
             };
-            let structured = json!({ "pinboards": shared.iter().map(|b| json!({"name": b.name, "items": b.item_count})).collect::<Vec<_>>() });
+            let structured = json!({ "pinboards": shared.iter().map(|b| match &b.query {
+                Some(q) => json!({"name": b.name, "smart_search": q}),
+                None => json!({"name": b.name, "items": b.item_count}),
+            }).collect::<Vec<_>>() });
             Ok(tool_text(text, Some(structured), false))
         }
         other => Err(format!("unknown tool {other}")),
@@ -641,6 +657,39 @@ mod tests {
         assert_eq!(ids.len(), 2, "only pinboard items when history is excluded: {ids:?}");
         let link = handle(&mut s, &call("get_clipboard_item", json!({ "id": f.history_link })), &open).unwrap();
         assert_eq!(link["result"]["isError"], true);
+    }
+
+    #[test]
+    fn smart_pinboards_never_open_up_unshared_history() {
+        let f = fixture();
+        {
+            let s = Store::open(&f.db, f.blobs.clone()).unwrap();
+            s.create_smart_pinboard("Docs", "example", None).unwrap();
+        }
+        let ids = |r: &Value| -> Vec<i64> {
+            r["result"]["structuredContent"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|i| i["id"].as_i64().unwrap())
+                .collect()
+        };
+        let mut s = Session::default();
+        // History not shared: the smart pinboard shows nothing and is not listed.
+        let open = opener(&f, McpSettings { include_history: false, ..enabled() });
+        let r = handle(&mut s, &call("search_clipboard", json!({ "query": "board:Docs" })), &open).unwrap();
+        assert!(ids(&r).is_empty(), "{r}");
+        let boards = handle(&mut s, &call("list_pinboards", json!({})), &open).unwrap();
+        assert!(!text_of(&boards).contains("Docs"));
+        // History shared: it works, is listed with its search, and items are not doubled.
+        let open = opener(&f, enabled());
+        let r = handle(&mut s, &call("search_clipboard", json!({ "query": "board:Docs" })), &open).unwrap();
+        assert_eq!(ids(&r), [f.history_link]);
+        let r = handle(&mut s, &call("recent_clipboard", json!({ "limit": 50 })), &open).unwrap();
+        let all = ids(&r);
+        assert_eq!(all.iter().filter(|i| **i == f.history_link).count(), 1, "{all:?}");
+        let boards = handle(&mut s, &call("list_pinboards", json!({})), &open).unwrap();
+        assert!(text_of(&boards).contains("Docs (smart: example)"), "{}", text_of(&boards));
     }
 
     #[test]

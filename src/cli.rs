@@ -40,7 +40,7 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Search history. Supports type:, app:, after:, before: and board: filters.
+    /// Search history. Supports type:, app:, device:, after:, before: and board: filters.
     Search {
         query: Vec<String>,
         #[arg(short = 'n', long, default_value_t = 20)]
@@ -137,6 +137,15 @@ pub enum Command {
         #[arg(long, conflicts_with = "show")]
         tsv: bool,
     },
+    /// Remove items from clipboard history (pinboards are kept).
+    Clear {
+        /// Only items copied within this period, like 15m, 1h or 1d.
+        #[arg(long, value_name = "DURATION", conflicts_with = "all", required_unless_present = "all")]
+        last: Option<String>,
+        /// All of history.
+        #[arg(long)]
+        all: bool,
+    },
     /// Print data file locations.
     Paths,
 }
@@ -162,9 +171,24 @@ pub enum RulesCommand {
 #[derive(Subcommand)]
 pub enum BoardCommand {
     List,
-    Create { name: String },
-    Rename { name: String, new_name: String },
-    Delete { name: String },
+    Create {
+        name: String,
+        /// Make it a smart pinboard: a saved search over history, like "type:link app:slack".
+        #[arg(long, value_name = "QUERY")]
+        search: Option<String>,
+    },
+    /// Change a smart pinboard's saved search.
+    Search {
+        name: String,
+        query: String,
+    },
+    Rename {
+        name: String,
+        new_name: String,
+    },
+    Delete {
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -451,11 +475,23 @@ pub fn run(command: Command) -> Result<()> {
         Command::Board(cmd) => match cmd {
             BoardCommand::List => {
                 for b in store.pinboards()? {
-                    println!("{:>4}  #{:06X}  {:<24} {} items", b.id, b.color & 0xFFFFFF, b.name, b.item_count);
+                    let what = match &b.query {
+                        Some(q) => format!("smart: {q}"),
+                        None => format!("{} items", b.item_count),
+                    };
+                    println!("{:>4}  #{:06X}  {:<24} {what}", b.id, b.color & 0xFFFFFF, b.name);
                 }
             }
-            BoardCommand::Create { name } => {
-                println!("{}", store.create_pinboard(&name, None, None)?);
+            BoardCommand::Create { name, search } => {
+                let id = match search {
+                    Some(q) => store.create_smart_pinboard(&name, &q, None)?,
+                    None => store.create_pinboard(&name, None, None)?,
+                };
+                println!("{id}");
+            }
+            BoardCommand::Search { name, query } => {
+                let id = board_id(&store, &name, false)?;
+                store.set_pinboard_query(id, &query)?;
             }
             BoardCommand::Rename { name, new_name } => {
                 let id = board_id(&store, &name, false)?;
@@ -595,6 +631,24 @@ pub fn run(command: Command) -> Result<()> {
             println!("Top apps:");
             for (a, n) in &s.top_apps {
                 println!("  {a:<24} {n}");
+            }
+        }
+        Command::Clear { last, .. } => {
+            let since = match last.as_deref() {
+                Some(d) => {
+                    let ms = crate::rules::parse_duration(d)
+                        .with_context(|| format!("{d:?} is not a duration (use for example 15m, 1h or 1d)"))?;
+                    Some(now_ms() - ms)
+                }
+                None => None,
+            };
+            let removed = store.count_history_since(since)?;
+            store.clear_history(since)?;
+            store.collect_garbage()?;
+            let what = if removed == 1 { "1 item".to_string() } else { format!("{removed} items") };
+            match &last {
+                Some(d) => println!("Removed {what} copied in the last {d} from history"),
+                None => println!("Removed {what} from history"),
             }
         }
         Command::Paths => {

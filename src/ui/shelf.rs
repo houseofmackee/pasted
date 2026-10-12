@@ -153,7 +153,7 @@ impl Shelf {
         panel.setContentView(Some(&effect));
 
         let search = NSSearchField::initWithFrame(NSSearchField::alloc(mtm), rect(16.0, 0.0, 260.0, 28.0));
-        search.setPlaceholderString(Some(&ns("Search  (type: app: after: board:)")));
+        search.setPlaceholderString(Some(&ns("Search  (type: app: device: board:)")));
         search.setAccessibilityLabel(Some(&ns("Search clipboard history")));
         search.setAccessibilityHelp(Some(&ns(
             "Type to search. Left and right arrows choose an item, Return pastes it, Tab switches pinboards, Escape closes.",
@@ -307,14 +307,19 @@ impl Shelf {
         let mut x = 0.0;
         let mut tabs_width = 0.0;
         let target: &AnyObject = &self.target;
-        let mut add = |title: &str, tag_value: isize, on: bool, color: Option<u32>, menu: Option<Retained<NSMenu>>| {
+        let mut add = |title: &str,
+                       tag_value: isize,
+                       on: bool,
+                       color: Option<u32>,
+                       smart: bool,
+                       menu: Option<Retained<NSMenu>>| {
             // SAFETY: the target object implements `tabClicked:`.
             let b = unsafe {
                 NSButton::buttonWithTitle_target_action(&ns(title), Some(target), Some(sel!(tabClicked:)), self.mtm)
             };
             b.setBordered(false);
             b.setTag(tag_value);
-            b.setAttributedTitle(&tab_title(title, on, color));
+            b.setAttributedTitle(&tab_title(title, on, color, smart));
             b.setWantsLayer(true);
             if let Some(layer) = b.layer() {
                 layer.setBackgroundColor(Some(&tab_background(on).CGColor()));
@@ -334,7 +339,11 @@ impl Shelf {
                 (t, sel) if t == tag(TAB_SELECT, -1) => {
                     format!("Clipboard history{}", if sel { ", selected" } else { "" })
                 }
-                (_, sel) => format!("{title} pinboard{}", if sel { ", selected" } else { "" }),
+                (_, sel) => format!(
+                    "{title} {}pinboard{}",
+                    if smart { "smart " } else { "" },
+                    if sel { ", selected" } else { "" }
+                ),
             };
             b.setAccessibilityLabel(Some(&ns(&spoken)));
             b.sizeToFit();
@@ -344,14 +353,30 @@ impl Shelf {
             self.tabs.addSubview(&b);
             tabs_width = x - 6.0;
         };
-        add("Clipboard", tag(TAB_SELECT, -1), self.board.is_none(), None, None);
+        add("Clipboard", tag(TAB_SELECT, -1), self.board.is_none(), None, false, None);
         for p in &self.boards {
             let menu = board_menu(p, target, self.mtm);
-            add(&p.name, tag(TAB_SELECT, p.id), self.board == Some(p.id), Some(p.color), Some(menu));
+            add(&p.name, tag(TAB_SELECT, p.id), self.board == Some(p.id), Some(p.color), p.is_smart(), Some(menu));
         }
-        add("+ New", tag(TAB_NEW, 0), false, None, None);
+        add("+ New", tag(TAB_NEW, 0), false, None, false, None);
         self.tabs_width = tabs_width;
         self.layout_bar();
+        // In a smart pinboard, show its saved search; typing narrows it.
+        let placeholder = match self.current_board().and_then(|b| b.query.as_ref().map(|q| (&b.name, q))) {
+            Some((name, query)) => format!("Search in {name}  ({query})"),
+            None => "Search  (type: app: device: board:)".to_string(),
+        };
+        self.search.setPlaceholderString(Some(&ns(&placeholder)));
+    }
+
+    /// The open pinboard, if any.
+    pub fn current_board(&self) -> Option<&Pinboard> {
+        self.board.and_then(|id| self.boards.iter().find(|b| b.id == id))
+    }
+
+    /// True when a smart pinboard is open.
+    pub fn in_smart_board(&self) -> bool {
+        self.current_board().is_some_and(Pinboard::is_smart)
     }
 
     pub fn select_board(&mut self, board: Option<i64>, store: &Store) {
@@ -359,6 +384,34 @@ impl Shelf {
         let text = self.search_text();
         self.reload_tabs(store);
         self.set_query(&text, store);
+    }
+
+    /// Whether a search (text or filters) narrows what is shown.
+    pub fn is_searching(&self) -> bool {
+        self.query != Query { board_id: self.board, ..Query::default() }
+    }
+
+    /// Clears the search and selects item `id` where it sits in history
+    /// (`board` is `None`) or in that pinboard. Returns false if it is not
+    /// there.
+    pub fn jump_to(&mut self, id: i64, board: Option<i64>, store: &Store) -> bool {
+        self.board = board;
+        self.search.setStringValue(&ns(""));
+        self.reload_tabs(store);
+        self.set_query("", store);
+        let mut index = self.items.iter().position(|i| i.id == id);
+        while index.is_none() && self.more_available {
+            let before = self.items.len();
+            self.load_more(store);
+            if self.items.len() == before {
+                break;
+            }
+            index = self.items[before..].iter().position(|i| i.id == id).map(|i| i + before);
+        }
+        let Some(index) = index else { return false };
+        self.ensure_built(index + 3, store);
+        self.select(index);
+        true
     }
 
     /// Cycles through Clipboard and the pinboards.
@@ -580,10 +633,14 @@ fn tab_background(selected: bool) -> Retained<NSColor> {
 }
 
 /// Tab label, with a dot in the pinboard's color when there is one.
-fn tab_title(name: &str, selected: bool, color: Option<u32>) -> Retained<NSAttributedString> {
-    let text = match color {
-        Some(_) => format!("\u{25cf} {name}"),
-        None => name.to_string(),
+/// A tab label: pinboards start with a colored dot, smart pinboards with a
+/// magnifier in the pinboard's color.
+fn tab_title(name: &str, selected: bool, color: Option<u32>, smart: bool) -> Retained<NSAttributedString> {
+    let mark = color.filter(|_| smart).and_then(smart_mark);
+    let text = match (color, &mark) {
+        (Some(_), Some(_)) => format!(" {name}"),
+        (Some(_), None) => format!("\u{25cf} {name}"),
+        (None, _) => name.to_string(),
     };
     let text = NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &ns(&text));
     // SAFETY: reading an AppKit constant.
@@ -594,11 +651,35 @@ fn tab_title(name: &str, selected: bool, color: Option<u32>) -> Retained<NSAttri
     unsafe {
         text.addAttribute_value_range(NSFontAttributeName, &font, all);
         text.addAttribute_value_range(NSForegroundColorAttributeName, &fg, all);
-        if let Some(c) = color {
+        if let (Some(c), None) = (color, &mark) {
             text.addAttribute_value_range(NSForegroundColorAttributeName, &argb(c), NSRange::new(0, 1));
         }
     }
+    if let Some(mark) = mark {
+        text.insertAttributedString_atIndex(&mark, 0);
+    }
     Retained::into_super(text)
+}
+
+/// The SF Symbols magnifier, tinted, as text (`None` if unavailable).
+fn smart_mark(color: u32) -> Option<Retained<NSAttributedString>> {
+    use objc2_app_kit::{NSAttributedStringAttachmentConveniences, NSImageSymbolConfiguration, NSTextAttachment};
+    let image = NSImage::imageWithSystemSymbolName_accessibilityDescription(&ns("magnifyingglass"), None)?;
+    // SAFETY: reading an AppKit constant.
+    let size = NSImageSymbolConfiguration::configurationWithPointSize_weight(11.0, unsafe {
+        objc2_app_kit::NSFontWeightHeavy
+    });
+    let palette =
+        NSImageSymbolConfiguration::configurationWithPaletteColors(&objc2_foundation::NSArray::from_retained_slice(&[
+            argb(color),
+        ]));
+    let image = image.imageWithSymbolConfiguration(&size.configurationByApplyingConfiguration(&palette))?;
+    let attachment = NSTextAttachment::new();
+    let s = image.size();
+    // Sits on the text baseline like the pinboard dot.
+    attachment.setBounds(rect(0.0, -1.5, s.width, s.height));
+    attachment.setImage(Some(&image));
+    Some(NSAttributedString::attributedStringWithAttachment(&attachment))
 }
 
 pub const TAB_SELECT: u8 = 1;
@@ -606,6 +687,7 @@ pub const TAB_NEW: u8 = 2;
 pub const BOARD_RENAME: u8 = 3;
 pub const BOARD_DELETE: u8 = 4;
 pub const BOARD_COLOR: u8 = 5;
+pub const BOARD_EDIT_SEARCH: u8 = 6;
 
 fn board_menu(board: &Pinboard, target: &AnyObject, mtm: MainThreadMarker) -> Retained<NSMenu> {
     let menu = NSMenu::new(mtm);
@@ -613,6 +695,9 @@ fn board_menu(board: &Pinboard, target: &AnyObject, mtm: MainThreadMarker) -> Re
         let item = menu_item(title, t, target, mtm);
         menu.addItem(&item);
     };
+    if board.is_smart() {
+        add("Edit Search\u{2026}", tag(BOARD_EDIT_SEARCH, board.id));
+    }
     add("Rename Pinboard\u{2026}", tag(BOARD_RENAME, board.id));
     let colors = NSMenu::new(mtm);
     for (i, (name, _)) in BOARD_COLOR_NAMES.iter().enumerate() {

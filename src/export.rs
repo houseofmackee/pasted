@@ -74,6 +74,10 @@ struct BoardOut {
     name: String,
     /// ARGB, for example "#FFFF3B30".
     color: String,
+    /// Saved search of a smart pinboard (absent for regular pinboards and
+    /// in backups from before smart pinboards).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    search: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -321,7 +325,7 @@ pub fn export(store: &Store, path: &Path, format: Format, query: Option<&Query>)
         pinboards: store
             .pinboards()?
             .into_iter()
-            .map(|b| BoardOut { name: b.name, color: format!("#{:08X}", b.color) })
+            .map(|b| BoardOut { name: b.name, color: format!("#{:08X}", b.color), search: b.query })
             .collect(),
         items,
         link_previews,
@@ -387,7 +391,11 @@ pub fn restore(store: &mut Store, path: &Path) -> Result<RestoreSummary> {
     // Keep the archive's pinboard order for boards that do not exist yet.
     for b in &manifest.pinboards {
         if store.pinboard_by_name(&b.name)?.is_none() {
-            store.create_pinboard(&b.name, colors.get(&b.name).copied(), None)?;
+            let color = colors.get(&b.name).copied();
+            match &b.search {
+                Some(search) => store.create_smart_pinboard(&b.name, search, color)?,
+                None => store.create_pinboard(&b.name, color, None)?,
+            };
             summary.pinboards_created += 1;
         }
     }
@@ -441,7 +449,10 @@ pub fn restore(store: &mut Store, path: &Path) -> Result<RestoreSummary> {
                         store.create_pinboard(name, colors.get(name).copied(), None)?
                     }
                 };
-                store.pin(id, board, None)?;
+                // A local smart pinboard of the same name cannot hold pinned items.
+                if store.pinboard_query(board)?.is_none() {
+                    store.pin(id, board, None)?;
+                }
             }
             if let Some(ocr) = &item.ocr {
                 store.set_ocr(id, ocr)?;
@@ -503,6 +514,7 @@ mod tests {
         let img = s.insert(&image_item(3_000), true).unwrap().id();
         let board = s.create_pinboard("Work", Some(0xFF34C759), None).unwrap();
         s.pin(img, board, None).unwrap();
+        s.create_smart_pinboard("Links", "type:link", Some(0xFF007AFF)).unwrap();
         s.set_ocr(img, "receipt total").unwrap();
         s.mark_used(link).unwrap();
         s.set_link_preview(
@@ -538,6 +550,12 @@ mod tests {
         assert_eq!(target.search(&Query::text("receipt"), 10, 0).unwrap().len(), 1);
         assert_eq!(target.search(&Query::parse("board:work"), 10, 0).unwrap().len(), 1);
         assert_eq!(target.pinboards().unwrap()[0].color, 0xFF34C759);
+        let smart = &target.pinboards().unwrap()[1];
+        assert_eq!(
+            (smart.name.as_str(), smart.query.as_deref(), smart.color),
+            ("Links", Some("type:link"), 0xFF007AFF)
+        );
+        assert_eq!(target.search(&Query::parse("board:Links"), 10, 0).unwrap().len(), 1);
         let link = items.iter().find(|i| i.kind == ItemKind::Link).unwrap();
         assert_eq!(link.use_count, 1);
         assert_eq!(link.created_at, 2_000);

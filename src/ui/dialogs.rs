@@ -24,6 +24,15 @@ pub fn info(title: &str, message: &str, mtm: MainThreadMarker) {
     alert(title, message, &["OK"], mtm).runModal();
 }
 
+/// Asks the user to pick one of `choices` (plus Cancel). Returns its index.
+pub fn choose(title: &str, message: &str, choices: &[&str], mtm: MainThreadMarker) -> Option<usize> {
+    let mut buttons = choices.to_vec();
+    buttons.push("Cancel");
+    let response = alert(title, message, &buttons, mtm).runModal();
+    let index = (response - NSAlertFirstButtonReturn) as usize;
+    (index < choices.len()).then_some(index)
+}
+
 pub fn confirm(title: &str, message: &str, action: &str, mtm: MainThreadMarker) -> bool {
     let a = alert(title, message, &[action, "Cancel"], mtm);
     a.setAlertStyle(NSAlertStyle::Warning);

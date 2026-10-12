@@ -69,6 +69,10 @@ const ITEM_UNPIN: u8 = 38;
 const ITEM_DELETE: u8 = 39;
 const ITEM_OPEN: u8 = 40;
 const ITEM_PASTE_AS: u8 = 41;
+/// Show the item (arg) in clipboard history.
+const ITEM_SHOW_HISTORY: u8 = 42;
+/// Show the selected item in the pinboard (arg).
+const ITEM_SHOW_BOARD: u8 = 43;
 /// Transform index meaning "paste the snippet without expanding placeholders".
 const RAW_SNIPPET: i64 = 0xff;
 
@@ -223,7 +227,8 @@ define_class!(
 );
 
 impl Target {
-    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+    /// The app's action target (public so UI tests can build windows).
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
         unsafe { msg_send![Self::alloc(mtm), init] }
     }
 }
@@ -785,7 +790,14 @@ impl App {
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("Import from Paste\u{2026}", IMPORT_PASTE);
-        add("Clear History\u{2026}", CLEAR_HISTORY);
+        let clear = NSMenu::new(mtm);
+        for (title, minutes) in CLEAR_CHOICES {
+            clear.addItem(&menu_item(&format!("{title}\u{2026}"), tag(CLEAR_HISTORY, *minutes), t, mtm));
+            if *minutes == 24 * 60 {
+                clear.addItem(&NSMenuItem::separatorItem(mtm));
+            }
+        }
+        add("Clear History", 0).setSubmenu(Some(&clear));
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         add("Statistics\u{2026}", STATISTICS);
         add("Settings\u{2026}", SETTINGS);
@@ -951,6 +963,17 @@ impl App {
     fn close_shelf(&mut self) {
         self.preview.hide();
         self.shelf.hide();
+    }
+
+    /// Leaves a search for the item's place: in history if it is there,
+    /// otherwise in its first pinboard.
+    fn show_item(&mut self, id: i64) {
+        let in_history = self.store.item_in_history(id).unwrap_or(false);
+        let board = if in_history { None } else { self.store.item_pinboards(id).unwrap_or_default().first().copied() };
+        if (in_history || board.is_some()) && self.shelf.jump_to(id, board, &self.store) {
+            return;
+        }
+        objc2_app_kit::NSBeep();
     }
 
     fn selected_id(&self) -> Option<i64> {
@@ -1202,7 +1225,8 @@ impl App {
     }
 
     fn delete(&mut self, id: i64) {
-        let result = match self.shelf.board {
+        // In a smart pinboard (a search over history) delete removes from history.
+        let result = match self.shelf.board.filter(|_| !self.shelf.in_smart_board()) {
             Some(board) => self.store.unpin(id, board),
             None => self.store.remove_from_history(id),
         };
@@ -1614,6 +1638,7 @@ pub fn shelf_key_equivalent(event: &NSEvent) -> bool {
         Edit,
         Rename,
         NewBoard(Option<i64>),
+        SaveSearch,
         Settings,
     }
     let after = with(|app| {
@@ -1669,7 +1694,14 @@ pub fn shelf_key_equivalent(event: &NSEvent) -> bool {
                 app.close_shelf();
                 Some(After::Nothing)
             }
+            "g" => {
+                if let Some(id) = selected {
+                    app.show_item(id);
+                }
+                Some(After::Nothing)
+            }
             "," => Some(After::Settings),
+            "s" => Some(After::SaveSearch),
             _ if code == 51 => {
                 if let Some(id) = selected {
                     app.delete(id)
@@ -1694,6 +1726,10 @@ pub fn shelf_key_equivalent(event: &NSEvent) -> bool {
         }
         Some(After::NewBoard(item)) => {
             new_pinboard(item);
+            true
+        }
+        Some(After::SaveSearch) => {
+            save_search_as_smart_pinboard();
             true
         }
         Some(After::Settings) => {
@@ -1748,22 +1784,40 @@ pub fn card_menu(index: usize) -> Option<Retained<NSMenu>> {
         add(&menu, "Rename\u{2026}", ITEM_RENAME, item.id);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
 
-        let pins = NSMenu::new(mtm);
+        // Leave a search (or another pinboard) for the item's place in history or a pinboard.
         let on = app.store.item_pinboards(item.id).unwrap_or_default();
-        for b in &app.shelf.boards {
+        let mut shows = 0;
+        if (app.shelf.is_searching() || app.shelf.board.is_some())
+            && app.store.item_in_history(item.id).unwrap_or(false)
+        {
+            add(&menu, "Show in Clipboard", ITEM_SHOW_HISTORY, item.id).setKeyEquivalent(&ns("g"));
+            shows += 1;
+        }
+        for b in app.shelf.boards.iter().filter(|b| on.contains(&b.id)) {
+            if app.shelf.board != Some(b.id) || app.shelf.is_searching() {
+                add(&menu, &format!("Show in {}", b.name), ITEM_SHOW_BOARD, b.id);
+                shows += 1;
+            }
+        }
+        if shows > 0 {
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+        }
+
+        let pins = NSMenu::new(mtm);
+        for b in app.shelf.boards.iter().filter(|b| !b.is_smart()) {
             let it = add(&pins, &b.name, ITEM_PIN, b.id);
             if on.contains(&b.id) {
                 it.setState(NSControlStateValueOn);
             }
         }
-        if !app.shelf.boards.is_empty() {
+        if app.shelf.boards.iter().any(|b| !b.is_smart()) {
             pins.addItem(&NSMenuItem::separatorItem(mtm));
         }
         add(&pins, "New Pinboard\u{2026}", ITEM_PIN_NEW, item.id);
         let pin_item = menu_item("Pin to", 0, t, mtm);
         pin_item.setSubmenu(Some(&pins));
         menu.addItem(&pin_item);
-        if app.shelf.board.is_some() {
+        if app.shelf.board.is_some() && !app.shelf.in_smart_board() {
             add(&menu, "Remove from Pinboard", ITEM_UNPIN, item.id);
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
@@ -1882,7 +1936,7 @@ fn dispatch(raw_tag: isize) {
         PASTE_STACK => {
             with(|app| app.toggle_stack());
         }
-        CLEAR_HISTORY => clear_history(),
+        CLEAR_HISTORY => clear_history(arg),
         OPEN_SETTINGS => open_settings_file(),
         STATISTICS => {
             with(|app| app.open_stats());
@@ -2030,6 +2084,21 @@ fn dispatch(raw_tag: isize) {
         }
         ABOUT => about(),
         QUIT => NSApplication::sharedApplication(mtm()).terminate(None),
+        ITEM_SHOW_HISTORY => {
+            with(|app| {
+                if !app.shelf.jump_to(arg, None, &app.store) {
+                    objc2_app_kit::NSBeep();
+                }
+            });
+        }
+        ITEM_SHOW_BOARD => {
+            with(|app| {
+                let Some(id) = app.selected_id() else { return };
+                if !app.shelf.jump_to(id, Some(arg), &app.store) {
+                    objc2_app_kit::NSBeep();
+                }
+            });
+        }
         ITEM_PASTE | ITEM_PASTE_PLAIN => {
             with(|app| app.paste(arg, code == ITEM_PASTE_PLAIN));
         }
@@ -2074,7 +2143,43 @@ fn dispatch(raw_tag: isize) {
         shelf::TAB_SELECT => {
             with(|app| app.shelf.select_board(if arg < 0 { None } else { Some(arg) }, &app.store));
         }
-        shelf::TAB_NEW => new_pinboard(None),
+        shelf::TAB_NEW => {
+            let searching = with(|app| app.shelf.is_searching()).unwrap_or(false);
+            if !searching {
+                new_pinboard(None);
+                return;
+            }
+            let choice = run_modal(|mtm| {
+                dialogs::choose(
+                    "New pinboard",
+                    "A smart pinboard shows everything in history that matches the current search.",
+                    &["Smart Pinboard from Search", "Pinboard"],
+                    mtm,
+                )
+            });
+            match choice {
+                Some(0) => save_search_as_smart_pinboard(),
+                Some(_) => new_pinboard(None),
+                None => {}
+            }
+        }
+        shelf::BOARD_EDIT_SEARCH => {
+            let Some(query) = with(|app| app.store.pinboard_query(arg).ok().flatten()).flatten() else { return };
+            let Some(new) = run_modal(|mtm| {
+                dialogs::prompt("Edit Search", "Items in history matching this search are shown:", &query, mtm)
+            }) else {
+                return;
+            };
+            with(|app| {
+                if let Err(e) = app.store.set_pinboard_query(arg, &new) {
+                    tracing::warn!("smart pinboard search not changed: {e:#}");
+                    return;
+                }
+                let text = app.shelf.search_text();
+                app.shelf.reload_tabs(&app.store);
+                app.shelf.set_query(&text, &app.store);
+            });
+        }
         shelf::BOARD_RENAME => {
             let Some(name) =
                 with(|app| app.shelf.boards.iter().find(|b| b.id == arg).map(|b| b.name.clone())).flatten()
@@ -2100,18 +2205,19 @@ fn dispatch(raw_tag: isize) {
             }
         }
         shelf::BOARD_DELETE => {
-            let Some(name) =
-                with(|app| app.shelf.boards.iter().find(|b| b.id == arg).map(|b| b.name.clone())).flatten()
+            let Some((name, smart)) =
+                with(|app| app.shelf.boards.iter().find(|b| b.id == arg).map(|b| (b.name.clone(), b.is_smart())))
+                    .flatten()
             else {
                 return;
             };
+            let message = if smart {
+                "Only the saved search is removed; no items are deleted."
+            } else {
+                "Items that are only on this pinboard will be deleted."
+            };
             let ok = run_modal(|mtm| {
-                dialogs::confirm(
-                    &format!("Delete the pinboard \u{201c}{name}\u{201d}?"),
-                    "Items that are only on this pinboard will be deleted.",
-                    "Delete",
-                    mtm,
-                )
+                dialogs::confirm(&format!("Delete the pinboard \u{201c}{name}\u{201d}?"), message, "Delete", mtm)
             });
             if ok {
                 with(|app| {
@@ -2163,6 +2269,37 @@ fn rename_selected() {
 }
 
 /// Creates a pinboard, optionally pinning `item` to it.
+/// Saves the shelf's current search as a smart pinboard and opens it. In a
+/// pinboard tab the search stays limited to that pinboard; in a smart one it
+/// adds to its saved search.
+fn save_search_as_smart_pinboard() {
+    let Some((query, suggested)) = with(|app| {
+        let typed = app.shelf.search_text().trim().to_string();
+        let base = app.shelf.current_board().map(|b| match &b.query {
+            Some(saved) => saved.clone(),
+            None => format!("board:{}", b.name.split_whitespace().collect::<Vec<_>>().join("")),
+        });
+        let query = [base.unwrap_or_default(), typed.clone()].join(" ").trim().to_string();
+        (!typed.is_empty()).then_some((query, typed))
+    })
+    .flatten() else {
+        objc2_app_kit::NSBeep();
+        return;
+    };
+    let message = format!("Shows everything in history matching \u{201c}{query}\u{201d}.\n\nName:");
+    let Some(name) = run_modal(|mtm| dialogs::prompt("New Smart Pinboard", &message, &suggested, mtm)) else { return };
+    if name.trim().is_empty() {
+        return;
+    }
+    with(|app| match app.store.create_smart_pinboard(&name, &query, None) {
+        Ok(board) => {
+            app.shelf.search.setStringValue(&ns(""));
+            app.shelf.select_board(Some(board), &app.store);
+        }
+        Err(e) => tracing::error!("creating smart pinboard failed: {e:#}"),
+    });
+}
+
 fn new_pinboard(item: Option<i64>) {
     let Some(name) = run_modal(|mtm| dialogs::prompt("New Pinboard", "Name:", "", mtm)) else { return };
     if name.trim().is_empty() {
@@ -2179,24 +2316,56 @@ fn new_pinboard(item: Option<i64>) {
     });
 }
 
-fn clear_history() {
-    let ok = run_modal(|mtm| {
-        dialogs::confirm(
-            "Clear clipboard history?",
-            "All history items will be deleted. Pinboards are kept.",
-            "Clear History",
-            mtm,
-        )
-    });
-    if ok {
-        with(|app| {
-            if let Err(e) = app.store.clear_history() {
-                tracing::error!("clear history failed: {e:#}");
-            }
-            let _ = app.store.collect_garbage();
-            app.refresh_settings_window();
+/// Periods offered for clearing history: (label, minutes; 0 means everything).
+const CLEAR_CHOICES: &[(&str, i64)] =
+    &[("Last 15 Minutes", 15), ("Last Hour", 60), ("Last 24 Hours", 24 * 60), ("All History", 0)];
+
+/// Clears history copied in the last `minutes` (0: all of it), after
+/// confirming. A negative value asks which period first.
+fn clear_history(minutes: i64) {
+    let minutes = if minutes < 0 {
+        let labels: Vec<&str> = CLEAR_CHOICES.iter().map(|(l, _)| *l).collect();
+        let choice = run_modal(|mtm| {
+            dialogs::choose(
+                "Clear clipboard history",
+                "Which items should be removed? Pinboards are kept.",
+                &labels,
+                mtm,
+            )
         });
+        match choice {
+            Some(i) => CLEAR_CHOICES[i].1,
+            None => return,
+        }
+    } else {
+        minutes
+    };
+    let since = (minutes > 0).then(|| now_ms() - minutes * 60_000);
+    let Some(Ok(count)) = with(|app| app.store.count_history_since(since)) else { return };
+    let period = CLEAR_CHOICES.iter().find(|(_, m)| *m == minutes).map_or("", |(l, _)| *l).to_lowercase();
+    if count == 0 {
+        run_modal(|mtm| dialogs::info("Nothing to clear", &format!("Nothing was copied in the {period}."), mtm));
+        return;
     }
+    let items = if count == 1 { "1 item".to_string() } else { format!("{count} items") };
+    let (title, message) = if since.is_some() {
+        (format!("Clear {items} copied in the {period}?"), "They are removed from history. Pinboards are kept.")
+    } else {
+        (format!("Clear all {items} in history?"), "Pinboards are kept.")
+    };
+    if !run_modal(|mtm| dialogs::confirm(&title, message, "Clear", mtm)) {
+        return;
+    }
+    with(|app| {
+        if let Err(e) = app.store.clear_history(since) {
+            tracing::error!("clear history failed: {e:#}");
+        }
+        let _ = app.store.collect_garbage();
+        if app.shelf.is_visible() && app.shelf.board.is_none() {
+            app.shelf.reload(&app.store);
+        }
+        app.refresh_settings_window();
+    });
 }
 
 fn open_settings_file() {
@@ -2245,7 +2414,8 @@ fn edit_rule(row: Option<usize>) {
             Some(r) => app.settings.rules.get(r)?.clone(),
             None => crate::rules::Rule::default(),
         };
-        let boards: Vec<String> = app.store.pinboards().unwrap_or_default().into_iter().map(|b| b.name).collect();
+        let boards: Vec<String> =
+            app.store.pinboards().unwrap_or_default().into_iter().filter(|b| !b.is_smart()).map(|b| b.name).collect();
         Some((rule, boards))
     })
     .flatten() else {

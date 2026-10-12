@@ -68,3 +68,7 @@ criterion = "0.8.2"
 [[bench]]
 name = "store"
 harness = false
+
+[[test]]
+name = "shelf_behavior"
+harness = false

@@ -125,6 +125,8 @@ ALTER TABLE items ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0;
     Migration::Sql(
         "CREATE INDEX IF NOT EXISTS items_recent ON items(in_history, timestamp DESC, expires_at, kind, app_id);",
     ),
+    // Smart pinboards: a saved search instead of pinned items.
+    Migration::Rust(Store::add_pinboard_query),
 ];
 
 /// With more full text matches than this, search walks recent history in
@@ -269,6 +271,47 @@ pub fn checksum(reps: &[Representation]) -> String {
     hex(&h.finalize())
 }
 
+/// Adds the filter conditions of `q` (types, apps, devices, dates).
+fn push_filters(q: &Query, clauses: &mut Vec<String>, args: &mut Vec<Value>) {
+    if !q.kinds.is_empty() {
+        clauses.push(format!("i.kind IN ({})", vec!["?"; q.kinds.len()].join(",")));
+        args.extend(q.kinds.iter().map(|k| Value::from(k.as_str().to_string())));
+    }
+    if !q.exclude_kinds.is_empty() {
+        clauses.push(format!("i.kind NOT IN ({})", vec!["?"; q.exclude_kinds.len()].join(",")));
+        args.extend(q.exclude_kinds.iter().map(|k| Value::from(k.as_str().to_string())));
+    }
+    if !q.apps.is_empty() {
+        let ors: Vec<&str> =
+            q.apps.iter().map(|_| "(a.name LIKE ? ESCAPE '\\' OR a.bundle_id LIKE ? ESCAPE '\\')").collect();
+        clauses.push(format!("({})", ors.join(" OR ")));
+        for app in &q.apps {
+            args.push(escape_like(app).into());
+            args.push(escape_like(app).into());
+        }
+    }
+    if !q.devices.is_empty() {
+        let mut ors = Vec::new();
+        for device in &q.devices {
+            if device == "unknown" {
+                ors.push("coalesce(i.device, '') = ''");
+            } else {
+                ors.push("i.device LIKE ? ESCAPE '\\'");
+                args.push(escape_like(device).into());
+            }
+        }
+        clauses.push(format!("({})", ors.join(" OR ")));
+    }
+    if let Some(ms) = q.after_ms {
+        clauses.push("i.timestamp >= ?".into());
+        args.push(ms.into());
+    }
+    if let Some(ms) = q.before_ms {
+        clauses.push("i.timestamp < ?".into());
+        args.push(ms.into());
+    }
+}
+
 /// The FTS match expression for the words that trigram search can handle
 /// (3 or more characters), or `None` when there are none.
 fn fts_expression(text: &str) -> Option<String> {
@@ -408,6 +451,20 @@ impl Store {
                     })
                     .with_context(|| format!("migration {}", i + 1))?,
             }
+        }
+        Ok(())
+    }
+
+    /// Migration: adds `pinboards.query` (saved search of smart pinboards),
+    /// unless it is already there.
+    fn add_pinboard_query(&mut self) -> Result<()> {
+        let exists: bool = self.conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('pinboards') WHERE name = 'query'",
+            [],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            self.conn.execute_batch("ALTER TABLE pinboards ADD COLUMN query TEXT")?;
         }
         Ok(())
     }
@@ -796,7 +853,7 @@ impl Store {
         let mut clauses: Vec<String> = Vec::new();
         let mut args: Vec<Value> = Vec::new();
 
-        let board = match (q.board_id, &q.board_name) {
+        let mut board = match (q.board_id, &q.board_name) {
             (Some(id), _) => Some(id),
             (None, Some(name)) => match self.pinboard_by_name(name)? {
                 Some(id) => Some(id),
@@ -804,6 +861,23 @@ impl Store {
             },
             _ => None,
         };
+        // A smart pinboard is its saved search: its filters must match as
+        // well as the typed ones, over history (or over the regular pinboard
+        // it names with board:, never another smart one).
+        let mut smart: Option<Query> = None;
+        if let Some(id) = board
+            && let Some(saved) = self.pinboard_query(id)?
+        {
+            let saved = Query::parse(&saved);
+            board = match &saved.board_name {
+                Some(name) => match self.pinboard_by_name(name)? {
+                    Some(base) if self.pinboard_query(base)?.is_none() => Some(base),
+                    _ => return Ok(None),
+                },
+                None => None,
+            };
+            smart = Some(saved);
+        }
         match board {
             Some(id) => {
                 clauses.push("i.id IN (SELECT item_id FROM pinboard_items WHERE pinboard_id = ?)".into());
@@ -814,40 +888,24 @@ impl Store {
         // Expired items are hidden immediately, before the sweep deletes them.
         clauses.push("(i.expires_at IS NULL OR i.expires_at > ?)".into());
         args.push(now_ms().into());
-        if !q.kinds.is_empty() {
-            clauses.push(format!("i.kind IN ({})", vec!["?"; q.kinds.len()].join(",")));
-            args.extend(q.kinds.iter().map(|k| Value::from(k.as_str().to_string())));
+        push_filters(q, &mut clauses, &mut args);
+        if let Some(saved) = &smart {
+            push_filters(saved, &mut clauses, &mut args);
         }
-        if !q.exclude_kinds.is_empty() {
-            clauses.push(format!("i.kind NOT IN ({})", vec!["?"; q.exclude_kinds.len()].join(",")));
-            args.extend(q.exclude_kinds.iter().map(|k| Value::from(k.as_str().to_string())));
-        }
-        if !q.apps.is_empty() {
-            let ors: Vec<&str> =
-                q.apps.iter().map(|_| "(a.name LIKE ? ESCAPE '\\' OR a.bundle_id LIKE ? ESCAPE '\\')").collect();
-            clauses.push(format!("({})", ors.join(" OR ")));
-            for app in &q.apps {
-                args.push(escape_like(app).into());
-                args.push(escape_like(app).into());
-            }
-        }
-        if let Some(ms) = q.after_ms {
-            clauses.push("i.timestamp >= ?".into());
-            args.push(ms.into());
-        }
-        if let Some(ms) = q.before_ms {
-            clauses.push("i.timestamp < ?".into());
-            args.push(ms.into());
-        }
+        // Both texts must match.
+        let text_all = match &smart {
+            Some(saved) => format!("{} {}", q.text, saved.text),
+            None => q.text.clone(),
+        };
 
         // Trigram FTS needs at least 3 characters per term; shorter terms use LIKE.
-        for word in q.text.split_whitespace().filter(|w| w.chars().count() < 3) {
+        for word in text_all.split_whitespace().filter(|w| w.chars().count() < 3) {
             clauses.push("(i.text LIKE ? ESCAPE '\\' OR coalesce(i.title, '') LIKE ? ESCAPE '\\')".into());
             args.push(escape_like(word).into());
             args.push(escape_like(word).into());
         }
         let mut source = "items i";
-        match (text, fts_expression(&q.text)) {
+        match (text, fts_expression(&text_all)) {
             (TextClause::Fts, Some(expr)) => {
                 clauses.push("i.id IN (SELECT rowid FROM items_fts WHERE items_fts MATCH ?)".into());
                 args.push(expr.into());
@@ -863,7 +921,7 @@ impl Store {
             _ => {}
         }
 
-        let order = match board {
+        let order = match board.filter(|_| smart.is_none()) {
             Some(id) => {
                 args.push(id.into());
                 "(SELECT sort FROM pinboard_items WHERE pinboard_id = ? AND item_id = i.id), i.timestamp DESC"
@@ -898,12 +956,26 @@ impl Store {
     }
 
     /// Deletes all history. Items that are also on a pinboard stay there.
-    pub fn clear_history(&self) -> Result<usize> {
-        let n = self
-            .conn
-            .execute("DELETE FROM items WHERE in_history = 1 AND id NOT IN (SELECT item_id FROM pinboard_items)", [])?;
-        self.conn.execute("UPDATE items SET in_history = 0 WHERE in_history = 1", [])?;
+    /// Removes history items last copied at or after `since` (all of
+    /// history when `None`). Items in pinboards stay there.
+    pub fn clear_history(&self, since: Option<i64>) -> Result<usize> {
+        let since = since.unwrap_or(i64::MIN);
+        let n = self.conn.execute(
+            "DELETE FROM items WHERE in_history = 1 AND timestamp >= ?1
+             AND id NOT IN (SELECT item_id FROM pinboard_items)",
+            [since],
+        )?;
+        self.conn.execute("UPDATE items SET in_history = 0 WHERE in_history = 1 AND timestamp >= ?1", [since])?;
         Ok(n)
+    }
+
+    /// History items `clear_history(since)` would remove from history.
+    pub fn count_history_since(&self, since: Option<i64>) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT count(*) FROM items WHERE in_history = 1 AND timestamp >= ?1",
+            [since.unwrap_or(i64::MIN)],
+            |r| r.get(0),
+        )?)
     }
 
     pub fn set_title(&self, id: i64, title: Option<&str>) -> Result<()> {
@@ -1036,11 +1108,18 @@ impl Store {
 
     pub fn pinboards(&self) -> Result<Vec<Pinboard>> {
         let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.name, p.color, (SELECT count(*) FROM pinboard_items pi WHERE pi.pinboard_id = p.id)
+            "SELECT p.id, p.name, p.color, (SELECT count(*) FROM pinboard_items pi WHERE pi.pinboard_id = p.id),
+                    p.query
              FROM pinboards p ORDER BY p.sort, p.id",
         )?;
         let rows = stmt.query_map([], |r| {
-            Ok(Pinboard { id: r.get(0)?, name: r.get(1)?, color: r.get::<_, i64>(2)? as u32, item_count: r.get(3)? })
+            Ok(Pinboard {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                color: r.get::<_, i64>(2)? as u32,
+                item_count: r.get(3)?,
+                query: r.get(4)?,
+            })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -1094,7 +1173,42 @@ impl Store {
         Ok(())
     }
 
+    /// A smart pinboard: a saved search over history, holding no pinned items.
+    pub fn create_smart_pinboard(&self, name: &str, query: &str, color: Option<u32>) -> Result<i64> {
+        let query = query.trim();
+        if query.is_empty() {
+            bail!("a smart pinboard needs a search");
+        }
+        let id = self.create_pinboard(name, color, None)?;
+        self.conn.execute("UPDATE pinboards SET query = ?2 WHERE id = ?1", params![id, query])?;
+        Ok(id)
+    }
+
+    /// The saved search of a smart pinboard (`None` for regular pinboards).
+    pub fn pinboard_query(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT query FROM pinboards WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten())
+    }
+
+    pub fn set_pinboard_query(&self, id: i64, query: &str) -> Result<()> {
+        let query = query.trim();
+        if query.is_empty() {
+            bail!("a smart pinboard needs a search");
+        }
+        if self.pinboard_query(id)?.is_none() {
+            bail!("only smart pinboards have a search");
+        }
+        self.conn.execute("UPDATE pinboards SET query = ?2 WHERE id = ?1", params![id, query])?;
+        Ok(())
+    }
+
     pub fn pin(&self, item_id: i64, pinboard_id: i64, sort: Option<i64>) -> Result<()> {
+        if self.pinboard_query(pinboard_id)?.is_some() {
+            bail!("items cannot be pinned to a smart pinboard; it shows what matches its search");
+        }
         self.conn.execute(
             "INSERT OR IGNORE INTO pinboard_items (pinboard_id, item_id, sort)
              VALUES (?1, ?2, coalesce(?3, (SELECT coalesce(min(sort), 0) - 1 FROM pinboard_items WHERE pinboard_id = ?1)))",
@@ -1108,20 +1222,26 @@ impl Store {
     /// Applies what matching rules asked for: pin first (which also keeps the
     /// item), otherwise set the expiry. Returns the pinboards it was pinned to.
     pub fn apply_rules(&self, item_id: i64, outcome: &crate::rules::Outcome, now: i64) -> Result<Vec<String>> {
+        let mut pinned = Vec::new();
         for name in &outcome.pin_to {
             let board = match self.pinboard_by_name(name)? {
                 Some(id) => id,
                 None => self.create_pinboard(name, None, None)?,
             };
+            if self.pinboard_query(board)?.is_some() {
+                tracing::warn!("rule skipped pinning to {name:?}: it is a smart pinboard");
+                continue;
+            }
             self.pin(item_id, board, None)?;
+            pinned.push(name.clone());
         }
-        if outcome.pin_to.is_empty()
+        if pinned.is_empty()
             && let Some(ms) = outcome.expire_after_ms
             && self.item_pinboards(item_id)?.is_empty()
         {
             self.conn.execute("UPDATE items SET expires_at = ?2 WHERE id = ?1", params![item_id, now + ms])?;
         }
-        Ok(outcome.pin_to.clone())
+        Ok(pinned)
     }
 
     /// Deletes history items whose rule-based expiry has passed.
@@ -1661,6 +1781,97 @@ pub mod tests {
             let all: HashSet<i64> = reference(&q, usize::MAX, 0).into_iter().collect();
             assert_eq!(s.search_ids(&q).unwrap(), all, "{text:?}");
         }
+    }
+
+    #[test]
+    fn clear_recent_history_keeps_older_and_pinned_items() {
+        let (_dir, mut s) = temp_store();
+        let old = s.insert(&text_item("old", 1_000), true).unwrap().id();
+        let recent = s.insert(&text_item("recent", 2_000), true).unwrap().id();
+        let pinned = s.insert(&text_item("pinned", 3_000), true).unwrap().id();
+        let board = s.create_pinboard("Work", None, None).unwrap();
+        s.pin(pinned, board, None).unwrap();
+
+        assert_eq!(s.count_history_since(Some(2_000)).unwrap(), 2);
+        assert_eq!(s.clear_history(Some(2_000)).unwrap(), 1, "only the unpinned recent item is deleted");
+        assert!(s.get(recent).unwrap().is_none());
+        assert!(s.item_in_history(old).unwrap());
+        assert!(!s.item_in_history(pinned).unwrap(), "the pinned item leaves history...");
+        assert_eq!(s.item_pinboards(pinned).unwrap(), vec![board], "...but stays in its pinboard");
+        assert_eq!(s.count_history_since(None).unwrap(), 1);
+        assert_eq!(s.clear_history(None).unwrap(), 1);
+        assert_eq!(s.count_history_since(None).unwrap(), 0);
+    }
+
+    #[test]
+    fn smart_pinboards_are_saved_searches() {
+        let (_dir, mut s) = temp_store();
+        let slack = SourceApp { bundle_id: "com.tinyspeck.slackmacgap".into(), name: Some("Slack".into()) };
+        let chrome_link = s.insert(&text_item("https://example.com/roadmap", 1_000), true).unwrap().id();
+        let mut item = text_item("https://slack.com/archives/roadmap", 2_000);
+        item.source_app = Some(slack.clone());
+        let slack_link = s.insert(&item, true).unwrap().id();
+        let mut item = text_item("roadmap meeting notes", 3_000);
+        item.source_app = Some(slack);
+        let slack_text = s.insert(&item, true).unwrap().id();
+
+        let links = s.create_smart_pinboard("Links", "type:link", None).unwrap();
+        let ids = |q: Query| -> Vec<i64> { s.search(&q, 10, 0).unwrap().into_iter().map(|i| i.id).collect() };
+        let on = |text: &str| Query { board_id: Some(links), ..Query::parse(text) };
+        assert_eq!(ids(on("")), [slack_link, chrome_link], "only links, newest first");
+        // Typed filters narrow the saved ones (both apply), they do not widen them.
+        assert_eq!(ids(on("app:slack")), [slack_link]);
+        assert_eq!(ids(on("example")), [chrome_link]);
+        assert_eq!(ids(Query::parse("board:Links app:slack")), [slack_link], "by name, as in the CLI");
+
+        let boards = s.pinboards().unwrap();
+        assert!(boards[0].is_smart());
+        assert_eq!(boards[0].query.as_deref(), Some("type:link"));
+        assert!(s.pin(slack_text, links, None).is_err(), "nothing can be pinned to a smart pinboard");
+
+        // Built on a regular pinboard instead of history.
+        let work = s.create_pinboard("Work", None, None).unwrap();
+        s.pin(chrome_link, work, None).unwrap();
+        s.pin(slack_text, work, None).unwrap();
+        let work_links = s.create_smart_pinboard("Work links", "board:Work type:link", None).unwrap();
+        assert_eq!(ids(Query { board_id: Some(work_links), ..Query::default() }), [chrome_link]);
+        // A smart pinboard never builds on another smart one.
+        let nested = s.create_smart_pinboard("Nested", "board:Links", None).unwrap();
+        assert!(ids(Query { board_id: Some(nested), ..Query::default() }).is_empty());
+
+        // Editing the search; regular pinboards have none.
+        s.set_pinboard_query(links, "app:slack").unwrap();
+        assert_eq!(ids(on("")), [slack_text, slack_link]);
+        assert!(s.set_pinboard_query(work, "type:link").is_err());
+        assert!(s.create_smart_pinboard("Empty", "  ", None).is_err());
+
+        // Close matches stay inside the smart pinboard.
+        let (items, _, close) = s.search_with_fuzzy(&on("metting"), 10, 0, true).unwrap();
+        assert_eq!((items.iter().map(|i| i.id).collect::<Vec<_>>(), close), (vec![slack_text], 1));
+    }
+
+    #[test]
+    fn device_filter() {
+        let (_dir, mut s) = temp_store();
+        for (n, device) in [(1, Some("MacBook Pro")), (2, Some("Studio")), (3, None)] {
+            let mut item = text_item(&format!("quarterly note {n}"), n);
+            item.device = device.map(str::to_string);
+            s.insert(&item, false).unwrap();
+        }
+        let texts = |q: &str| -> Vec<String> {
+            let mut t: Vec<String> = s.search(&Query::parse(q), 10, 0).unwrap().into_iter().map(|i| i.text).collect();
+            t.sort();
+            t
+        };
+        assert_eq!(texts("device:macbook"), ["quarterly note 1"]);
+        assert_eq!(texts("device:STUDIO note"), ["quarterly note 2"]);
+        assert_eq!(texts("device:unknown"), ["quarterly note 3"]);
+        assert_eq!(texts("device:macbook device:unknown"), ["quarterly note 1", "quarterly note 3"]);
+        assert!(texts("device:nothing").is_empty());
+        // Close matches respect the filter too.
+        let (items, _, close) = s.search_with_fuzzy(&Query::parse("device:studio quartely"), 10, 0, true).unwrap();
+        assert_eq!((items.len(), close), (1, 1));
+        assert_eq!(items[0].text, "quarterly note 2");
     }
 
     #[test]

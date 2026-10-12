@@ -739,7 +739,7 @@ impl SettingsWindow {
         let y = f.row("History:", 20.0);
         stats.setFrame(rect(CONTROL_X, y, W - CONTROL_X - 60.0, 18.0));
         f.add(&stats);
-        let clear = button("Clear History\u{2026}", tag(crate::app::CLEAR_HISTORY_TAG, 0), target, mtm);
+        let clear = button("Clear History\u{2026}", tag(crate::app::CLEAR_HISTORY_TAG, -1), target, mtm);
         let y = f.row("", 30.0);
         clear.setFrame(rect(CONTROL_X - 6.0, y, clear.frame().size.width, 30.0));
         f.add(&clear);

@@ -9,7 +9,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V, or click the menu bar icon; right-click or Control-click the icon for its menu)
 - Click sounds when copying and pasting (on by default; Settings > General)
 - Text, rich text, links, images, files, colors and code, each with its own card; rich text keeps its formatting (from RTF, or HTML through a built-in converter that never loads remote content)
-- Instant search, with close matches for typos and abbreviations ("quartely", "gthb") after exact ones, and filters: `type:link`, `app:safari`, `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
+- Instant search, with close matches for typos and abbreviations ("quartely", "gthb") after exact ones, and filters: `type:link`, `app:safari`, `device:macbook` (or `device:unknown`), `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
 - Paste As (⌥Return or right-click): case changes, trimming, single line, tracking-free links, pretty or minified JSON, sorted or unique lines, URL encoding, and Markdown as formatted text; only options that change the text are shown
@@ -20,6 +20,9 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Export to a restorable ZIP backup, JSON or CSV
 - Optional read-only access for AI tools such as Claude and Cursor through a local MCP server (off by default)
 - Pinboards with colors, plus a Paste Stack (⇧⌘C) for pasting several items in order, oldest or newest first
+- Smart pinboards: save a search (⌘S in the shelf) as a tab that always shows what in history matches it, such as `type:link app:slack`
+- Jump from a search result to its place in history or its pinboard (⌘G)
+- Clear just the last 15 minutes, hour or 24 hours of history, or all of it
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers (or, if you choose, keeps them hidden for a few minutes), supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
 - A command line interface for scripts
@@ -69,9 +72,13 @@ VoiceOver reads each card as one button (type, source app, age, content and posi
 | ⌘O | Open link or show file in Finder |
 | Tab, ⇧Tab, ⌘← ⌘→ | Switch between Clipboard and pinboards |
 | ⌘N | New pinboard |
+| ⌘S | Save the current search as a smart pinboard |
+| ⌘G | Show the selected item in history (or its pinboard), leaving the search |
 | Esc | Close preview, clear search, close shelf |
 
-Right-click a card for more actions, including pinning. Drag cards into other apps.
+Right-click a card for more actions, including pinning and Show in Clipboard or a pinboard. Drag cards into other apps.
+
+A smart pinboard (magnifier on its tab) is a saved search over history: it holds no pinned items, and typing in it narrows its search further. Right-click its tab to edit the search, rename, recolor or delete it. Its search can start from a regular pinboard instead of history, as in `board:Work type:link`. Items cannot be pinned to a smart pinboard, and rules skip them.
 
 ## Snippets
 
@@ -120,6 +127,8 @@ echo 'Due {date+7d}' | pasted expand --set Name=Ada   # expand snippet placehold
 echo hi | pasted add              # save text
 pasted pin 42 Snippets            # pin (creates the pinboard if needed)
 pasted board list
+pasted board create Links --search "type:link"   # a smart pinboard; `pasted board search Links QUERY` edits it
+pasted clear --last 1h            # remove the last hour of history (or --all); pinboards are kept
 pasted import paste --dry-run     # preview an import from Paste
 pasted open                       # show the shelf of the running app
 pasted settings --tab privacy     # show a Settings tab
@@ -201,7 +210,7 @@ Choose **Settings…** in the menu bar icon's menu or press ⌘, in the shelf. T
 - **Pasting**: direct pasting, plain text default, automatic cleanup, Accessibility status
 - **Shortcuts**: click a field and press a new combination (global shortcuts are paused while recording)
 - **Privacy**: confidential content, secret detection, screen sharing visibility, apps to ignore, ignore patterns
-- **Data**: storage statistics, Paste import, clear history, data folder
+- **Data**: storage statistics, Paste import, clear history (recent or all), data folder
 
 Changes apply immediately and are saved to `~/Library/Application Support/Pasted/settings.toml`. The file can also be edited by hand; Pasted notices the change within a couple of seconds.
 

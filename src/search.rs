@@ -1,6 +1,6 @@
 //! Search query syntax: free text plus filters.
 //!
-//! `type:link app:safari after:2025-01-01 before:2025-02-01 board:work some words`
+//! `type:link app:safari device:macbook after:2025-01-01 before:2025-02-01 board:work some words`
 //! Filters may be negated with a leading `-`, for example `-type:image`.
 
 use chrono::{Local, NaiveDate, TimeZone};
@@ -13,6 +13,8 @@ pub struct Query {
     pub kinds: Vec<ItemKind>,
     pub exclude_kinds: Vec<ItemKind>,
     pub apps: Vec<String>,
+    /// Part of a device name, lowercased; "unknown" means no device recorded.
+    pub devices: Vec<String>,
     pub after_ms: Option<i64>,
     pub before_ms: Option<i64>,
     /// Pinboard name from `board:`; resolved by the store.
@@ -55,6 +57,7 @@ impl Query {
                     None => words.push(token),
                 },
                 "app" | "from" => q.apps.push(value.to_lowercase()),
+                "device" | "mac" => q.devices.push(value.to_lowercase()),
                 "after" | "since" => match day_start_ms(value) {
                     Some(ms) => q.after_ms = Some(ms),
                     None => words.push(token),
@@ -89,6 +92,9 @@ mod tests {
         assert_eq!(q.exclude_kinds, vec![ItemKind::Image]);
         assert_eq!(q.apps, vec!["safari"]);
         assert_eq!(q.board_name.as_deref(), Some("Work"));
+        let q = Query::parse("device:MacBook mac:unknown notes");
+        assert_eq!(q.devices, vec!["macbook", "unknown"]);
+        assert_eq!(q.text, "notes");
     }
 
     #[test]
