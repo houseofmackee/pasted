@@ -139,6 +139,16 @@ pub struct Privacy {
     /// Empty means never save them. Excluded apps and ignore patterns always
     /// mean never saved.
     pub sensitive_expiry: String,
+    /// Refuse to pin sensitive items. Off by default: a pinned item is kept
+    /// (and loses its expiry), which a user may want for a code they reuse.
+    pub refuse_pinning_sensitive: bool,
+}
+
+impl Privacy {
+    /// Whether pinning an item with this sensitivity is refused.
+    pub fn refuses_pin(&self, sensitive: bool) -> bool {
+        sensitive && self.refuse_pinning_sensitive
+    }
 }
 
 pub const DEFAULT_EXCLUDED_APPS: &[&str] = &[
@@ -162,6 +172,7 @@ impl Default for Privacy {
             ignore_patterns: Vec::new(),
             visible_during_screen_sharing: false,
             sensitive_expiry: String::new(),
+            refuse_pinning_sensitive: false,
         }
     }
 }
@@ -262,6 +273,18 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pinning_sensitive_items_is_allowed_unless_refused() {
+        let mut p = Privacy::default();
+        assert!(!p.refuse_pinning_sensitive, "off by default");
+        assert!(!p.refuses_pin(true) && !p.refuses_pin(false));
+        p.refuse_pinning_sensitive = true;
+        assert!(p.refuses_pin(true));
+        assert!(!p.refuses_pin(false), "only sensitive items");
+        let s: Settings = toml::from_str("[privacy]\nrefuse_pinning_sensitive = true\n").unwrap();
+        assert!(s.privacy.refuse_pinning_sensitive);
+    }
 
     #[test]
     fn shelf_bar_alignment_is_saved_by_name() {

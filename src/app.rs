@@ -984,6 +984,12 @@ impl App {
         objc2_app_kit::NSBeep();
     }
 
+    /// Whether Settings > Privacy refuses pinning this (sensitive) item.
+    fn refuses_pin(&self, id: i64) -> bool {
+        let sensitive = self.store.get(id).ok().flatten().is_some_and(|i| i.sensitive);
+        self.settings.privacy.refuses_pin(sensitive)
+    }
+
     fn selected_id(&self) -> Option<i64> {
         self.shelf.selected_item().map(|i| i.id)
     }
@@ -1824,6 +1830,12 @@ pub fn card_menu(index: usize) -> Option<Retained<NSMenu>> {
         add(&pins, "New Pinboard\u{2026}", ITEM_PIN_NEW, item.id);
         let pin_item = menu_item("Pin to", 0, t, mtm);
         pin_item.setSubmenu(Some(&pins));
+        if app.settings.privacy.refuses_pin(item.sensitive) {
+            // Settings > Privacy turns off pinning sensitive items.
+            menu.setAutoenablesItems(false);
+            pin_item.setEnabled(false);
+            pin_item.setToolTip(Some(&ns("Pinning sensitive items is turned off in Settings > Privacy")));
+        }
         menu.addItem(&pin_item);
         if app.shelf.board.is_some() && !app.shelf.in_smart_board() {
             add(&menu, "Remove from Pinboard", ITEM_UNPIN, item.id);
@@ -2137,17 +2149,30 @@ fn dispatch(raw_tag: isize) {
         ITEM_EDIT => edit_selected(),
         ITEM_RENAME => rename_selected(),
         ITEM_PIN => {
-            with(|app| {
-                let Some(id) = app.selected_id() else { return };
+            let refused = with(|app| {
+                let Some(id) = app.selected_id() else { return false };
                 let pinned = app.store.item_pinboards(id).unwrap_or_default().contains(&arg);
+                if !pinned && app.refuses_pin(id) {
+                    return true;
+                }
                 let result = if pinned { app.store.unpin(id, arg) } else { app.store.pin(id, arg, None) };
                 if let Err(e) = result {
                     tracing::error!("pin failed: {e:#}");
                 }
                 app.shelf.reload_tabs(&app.store);
+                false
             });
+            if refused == Some(true) {
+                explain_refused_pin();
+            }
         }
-        ITEM_PIN_NEW => new_pinboard(Some(arg)),
+        ITEM_PIN_NEW => {
+            if with(|app| app.refuses_pin(arg)) == Some(true) {
+                explain_refused_pin();
+            } else {
+                new_pinboard(Some(arg));
+            }
+        }
         ITEM_UNPIN | ITEM_DELETE => {
             with(|app| app.delete(arg));
         }
@@ -2308,6 +2333,16 @@ fn save_search_as_smart_pinboard() {
             app.shelf.select_board(Some(board), &app.store);
         }
         Err(e) => tracing::error!("creating smart pinboard failed: {e:#}"),
+    });
+}
+
+fn explain_refused_pin() {
+    run_modal(|mtm| {
+        dialogs::info(
+            "Sensitive items can\u{2019}t be pinned",
+            "Pinning would keep this item past its deadline. You can allow it again in Settings > Privacy.",
+            mtm,
+        )
     });
 }
 

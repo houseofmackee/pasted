@@ -287,6 +287,7 @@ pub struct SettingsWindow {
     sensitive: Retained<NSPopUpButton>,
     ignore_secrets: Retained<NSButton>,
     visible_sharing: Retained<NSButton>,
+    refuse_pinning_sensitive: Retained<NSButton>,
     apps_table: Retained<NSTableView>,
     apps: Retained<AppsDataSource>,
     rules_table: Retained<NSTableView>,
@@ -573,6 +574,13 @@ impl SettingsWindow {
         let y = f.row("", 16.0);
         hint.setFrame(rect(CONTROL_X - 20.0, y, W - CONTROL_X - 20.0, 16.0));
         f.add(&hint);
+        let refuse_pinning_sensitive = checkbox("Don\u{2019}t allow pinning kept items", target, mtm);
+        let y = f.row("", 22.0);
+        refuse_pinning_sensitive.setFrame(rect(CONTROL_X - 20.0, y, W - CONTROL_X - 30.0, 20.0));
+        refuse_pinning_sensitive.setToolTip(Some(&ns(
+            "Pinned items are kept indefinitely, which would keep a sensitive item past its deadline.",
+        )));
+        f.add(&refuse_pinning_sensitive);
 
         let apps = AppsDataSource::new(mtm);
         let apps_table = NSTableView::initWithFrame(NSTableView::alloc(mtm), rect(0.0, 0.0, 340.0, 100.0));
@@ -826,6 +834,7 @@ impl SettingsWindow {
             sensitive,
             ignore_secrets,
             visible_sharing,
+            refuse_pinning_sensitive,
             apps_table,
             apps,
             rules_table,
@@ -903,6 +912,7 @@ impl SettingsWindow {
         self.sensitive.selectItemAtIndex(si as isize);
         set_checked(&self.ignore_secrets, p.ignore_secrets);
         set_checked(&self.visible_sharing, p.visible_during_screen_sharing);
+        set_checked(&self.refuse_pinning_sensitive, p.refuse_pinning_sensitive);
         let m = &s.mcp;
         set_checked(&self.mcp_enabled, m.enabled);
         set_checked(&self.mcp_history, m.include_history);
@@ -995,6 +1005,7 @@ impl SettingsWindow {
         }
         p.ignore_secrets = checked(&self.ignore_secrets);
         p.visible_during_screen_sharing = checked(&self.visible_sharing);
+        p.refuse_pinning_sensitive = checked(&self.refuse_pinning_sensitive);
         let m = &mut s.mcp;
         m.enabled = checked(&self.mcp_enabled);
         m.include_history = checked(&self.mcp_history);

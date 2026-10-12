@@ -190,6 +190,8 @@ By default, content that password managers mark as private and text that looks l
 
 Excluded apps and your own ignore patterns still mean never saved.
 
+Pinning a kept item keeps it for good (pinned items never expire), which is handy for a code you reuse. To rule that out, turn on **Don't allow pinning kept items** below the choice (`refuse_pinning_sensitive = true`); it is off by default, and items pinned before stay where they are.
+
 ## Encryption at rest
 
 Turn it on in Settings > Privacy > Encryption, or with `pasted encryption enable` while the app is not running (`status` and `disable` work the same way). Pasted then:
@@ -268,6 +270,7 @@ excluded_apps = ["com.1password.1password", "..."]
 ignore_patterns = []
 visible_during_screen_sharing = false
 sensitive_expiry = ""          # "" never saves sensitive items; "5m" keeps them briefly
+refuse_pinning_sensitive = false   # true: kept sensitive items cannot be pinned
 
 [pasting]                       # automatic cleanup on paste, off by default
 trim_whitespace = false

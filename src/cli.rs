@@ -464,7 +464,10 @@ pub fn run(command: Command) -> Result<()> {
             store.set_title(id, title.as_deref())?;
         }
         Command::Pin { id, board } => {
-            require(&store, id)?;
+            let item = require(&store, id)?;
+            if Settings::load(&crate::paths::settings_path()?)?.privacy.refuses_pin(item.sensitive) {
+                bail!("item {id} is sensitive, and pinning sensitive items is turned off (Settings > Privacy)");
+            }
             let board = board_id(&store, &board, true)?;
             store.pin(id, board, None)?;
         }
