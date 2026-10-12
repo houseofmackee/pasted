@@ -4,6 +4,21 @@ A fast, private clipboard manager for macOS, written in Rust. Inspired by [Paste
 
 Everything stays on your Mac: no accounts and no telemetry, with optional encryption at rest. The only network access is fetching link previews and checking for updates, both of which you can turn off.
 
+**[Download the latest release](https://github.com/houseofmackee/pasted/releases/latest)** (Apple silicon, macOS 14 or later): signed with a Developer ID, notarized by Apple, and it updates itself.
+
+![The shelf: clipboard history as cards, with pinboards and a smart pinboard as tabs](docs/screenshots/shelf.png)
+
+<p align="center">
+  <img src="docs/screenshots/shelf-smart-dark.png" alt="A smart pinboard in dark mode: every link in history" width="100%">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/statistics.png" alt="The Statistics window" width="49%">
+  <img src="docs/screenshots/settings-privacy.png" alt="Settings, Privacy tab" width="40%">
+</p>
+
+<sub>Screenshots use made-up demo data; `scripts/readme_screenshots.sh` regenerates them.</sub>
+
 ## Features
 
 - Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V, or click the menu bar icon; right-click or Control-click the icon for its menu)
@@ -26,6 +41,8 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Privacy: ignores password managers and concealed clipboard content, skips text that looks like API keys, private keys, tokens or card numbers (or, if you choose, keeps them hidden for a few minutes), supports custom ignore patterns, and hides the shelf from screen sharing
 - Import history, pinboards, OCR text and shortcuts from Paste
 - A command line interface for scripts
+- Updates itself (Sparkle), signed with a Developer ID and notarized; Apple silicon only
+- VoiceOver support, and it follows Reduce Motion and Increase Contrast
 
 ## Install
 
@@ -77,9 +94,12 @@ VoiceOver reads each card as one button (type, source app, age, content and posi
 | ⌘⌫ | Delete (or remove from the current pinboard) |
 | ⌘O | Open link or show file in Finder |
 | Tab, ⇧Tab, ⌘← ⌘→ | Switch between Clipboard and pinboards |
+| ⌘F | Go to the search field |
 | ⌘N | New pinboard |
 | ⌘S | Save the current search as a smart pinboard |
 | ⌘G | Show the selected item in history (or its pinboard), leaving the search |
+| ⌘, | Settings |
+| ⌘W | Close the shelf |
 | Esc | Close preview, clear search, close shelf |
 
 Right-click a card for more actions, including pinning and Show in Clipboard or a pinboard. Drag cards into other apps.
@@ -210,13 +230,15 @@ Limit an export with `--board NAME` or `--query "type:link after:2026-09-01"`. R
 
 ## Settings
 
-Choose **Settings…** in the menu bar icon's menu or press ⌘, in the shelf. The window has four tabs:
+Choose **Settings…** in the menu bar icon's menu or press ⌘, in the shelf. The window has seven tabs:
 
-- **General**: history retention, size limit, shelf search and tabs alignment, sounds, launch at login, link previews
-- **Pasting**: direct pasting, plain text default, automatic cleanup, Accessibility status
+- **General**: history retention, size limit, shelf search and tabs alignment, sounds, launch at login, link previews, close matches in search, automatic update checks
+- **Pasting**: direct pasting, plain text default, automatic cleanup, snippet placeholders, Paste Stack order, Accessibility status
 - **Shortcuts**: click a field and press a new combination (global shortcuts are paused while recording)
-- **Privacy**: confidential content, secret detection, screen sharing visibility, apps to ignore, ignore patterns
-- **Data**: storage statistics, Paste import, clear history (recent or all), data folder
+- **Privacy**: confidential content, secret detection, keeping sensitive items briefly, screen sharing visibility, apps to ignore, ignore patterns, encryption at rest
+- **Rules**: rules that expire or pin new copies (see above)
+- **AI**: access for AI tools through the MCP server, and its log
+- **Data**: storage statistics, Paste import, privacy checks for imports, export and restore, clear history (recent or all), data folder
 
 Changes apply immediately and are saved to `~/Library/Application Support/Pasted/settings.toml`. The file can also be edited by hand; Pasted notices the change within a couple of seconds.
 
@@ -259,17 +281,19 @@ skip_ignore_patterns = false
 skip_password_mentions = false
 ```
 
-Set `PASTED_HOME` to use a different data directory (useful for testing). `PASTED_LOG=pasted=debug` enables verbose logging.
+Environment variables for testing: `PASTED_HOME` uses a different data folder, `PASTED_KEYCHAIN_SERVICE` a different Keychain item for the encryption key, `PASTED_LOG=pasted=debug` enables verbose logging, and `PASTED_APPEARANCE=light` or `dark` forces an appearance. `PASTED_UPDATE_TEST` (with `PASTED_FEED_URL`) points a signed build at a test update feed.
 
 ## Development
 
 ```sh
-cargo test                     # unit tests, pasteboard integration tests, card layout snapshot
+cargo test                     # unit tests, pasteboard integration tests, card layout snapshot, shelf behavior
+cargo test -- --ignored keychain   # the encryption key move, against the real login Keychain
 cargo clippy --all-targets
 cargo bench --bench store      # capture and search benchmarks (search budget: 20 ms at 100k items; currently 0.1 to 10 ms)
+scripts/readme_screenshots.sh  # regenerate docs/screenshots from demo data (needs Accessibility for the terminal)
 ```
 
-The pasteboard tests use private, uniquely named pasteboards and never touch your clipboard. The card layout test (`tests/card_layout.rs`) builds a real card for each kind of item and compares every subview's frame and text with `tests/snapshots/card_layout.txt`; after an intended change, review the diff and run `UPDATE_SNAPSHOTS=1 cargo test --test card_layout`. Before a release, work through [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+The pasteboard tests use private, uniquely named pasteboards and never touch your clipboard. The shelf behavior test (`tests/shelf_behavior.rs`) builds a real shelf without showing it and checks smart pinboards and jumping from a search. The card layout test (`tests/card_layout.rs`) builds a real card for each kind of item and compares every subview's frame and text with `tests/snapshots/card_layout.txt`; after an intended change, review the diff and run `UPDATE_SNAPSHOTS=1 cargo test --test card_layout`. Before a release, work through [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
 
 GitHub Actions runs `cargo fmt --check`, `cargo clippy -D warnings` (debug and release), `cargo test`, a bundle build and `cargo deny check` (see `deny.toml`) on every push to master and every pull request.
 
@@ -278,10 +302,10 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy -D warnings` (debug and r
 Releases are built and published by GitHub Actions, not from a local machine. Bump the version in `Cargo.toml` (and `CFBundleVersion` in `macos/Info.plist`), commit, then push a matching tag:
 
 ```sh
-git tag v0.3.0 && git push origin master v0.3.0
+git tag vX.Y.Z && git push origin master vX.Y.Z
 ```
 
-`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the Developer ID from the repository secrets `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`, notarizes the app and the DMG with the App Store Connect API key (`NOTARY_API_KEY_BASE64` secret; `APPLE_TEAM_ID`, `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` variables), refuses to publish anything Gatekeeper would block, and publishes the DMG, zip and `SHA256SUMS.txt`. Locally, `scripts/dist.sh` does the same when the Developer ID is in the keychain and `PASTED_NOTARY_KEY`, `PASTED_NOTARY_KEY_ID` and `PASTED_NOTARY_ISSUER` are set. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
+`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the Developer ID from the repository secrets `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`, notarizes the app and the DMG with the App Store Connect API key (`NOTARY_API_KEY_BASE64` secret; `APPLE_TEAM_ID`, `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` variables), refuses to publish anything Gatekeeper would block, writes the update feed `appcast.xml` signed with the `SPARKLE_PRIVATE_KEY` secret, and publishes the DMG, zip, `SHA256SUMS.txt` and `appcast.xml`. Locally, `scripts/dist.sh` does the same when the Developer ID is in the keychain and `PASTED_NOTARY_KEY`, `PASTED_NOTARY_KEY_ID` and `PASTED_NOTARY_ISSUER` are set. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
 
 See [PLAN.md](PLAN.md) for the roadmap.
 
