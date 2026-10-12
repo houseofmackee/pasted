@@ -76,6 +76,7 @@ fn rich_reps() -> Vec<Representation> {
 
 #[test]
 fn plain_text_round_trip_marks_the_source() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     let before = board.changeCount();
     let change = pasteboard::write_text(&board, "hello pasteboard");
@@ -97,6 +98,7 @@ fn plain_text_round_trip_marks_the_source() {
 
 #[test]
 fn rich_text_keeps_every_representation() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     pasteboard::write(&board, &rich_reps());
     let item = captured(&board, &filter());
@@ -107,6 +109,7 @@ fn rich_text_keeps_every_representation() {
 
 #[test]
 fn utf16_copy_added_by_macos_is_not_stored() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     pasteboard::write(&board, &rich_reps());
     // macOS offers a UTF-16 version of the text next to the formats we wrote.
@@ -127,6 +130,7 @@ fn utf16_copy_added_by_macos_is_not_stored() {
 
 #[test]
 fn multiple_pasteboard_items_keep_their_order() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     let reps = [rep(0, UTI_FILE_URL, b"file:///tmp/a.txt"), rep(1, UTI_FILE_URL, b"file:///tmp/b%20c.txt")];
     pasteboard::write(&board, &reps);
@@ -139,6 +143,7 @@ fn multiple_pasteboard_items_keep_their_order() {
 
 #[test]
 fn images_are_classified_with_their_size() {
+    let _appkit = crate::appkit_test_lock();
     let png = base64::engine::general_purpose::STANDARD
         .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
         .unwrap();
@@ -151,6 +156,7 @@ fn images_are_classified_with_their_size() {
 
 #[test]
 fn concealed_content_is_skipped_or_kept_briefly() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     pasteboard::write(
         &board,
@@ -169,6 +175,7 @@ fn concealed_content_is_skipped_or_kept_briefly() {
 
 #[test]
 fn ignore_patterns_apply_to_captured_text() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     pasteboard::write_text(&board, "ticket INTERNAL-42");
     let f = PrivacyFilter::new(&Privacy { ignore_patterns: vec!["INTERNAL-\\d+".into()], ..Privacy::default() });
@@ -177,6 +184,7 @@ fn ignore_patterns_apply_to_captured_text() {
 
 #[test]
 fn size_limit_and_empty_pasteboards() {
+    let _appkit = crate::appkit_test_lock();
     let board = Board::new();
     pasteboard::write_text(&board, &"x".repeat(2000));
     assert!(matches!(capture(&board, &filter(), 1000, None), Capture::TooLarge(n) if n > 1000));
@@ -186,6 +194,7 @@ fn size_limit_and_empty_pasteboards() {
 
 #[test]
 fn stored_items_write_back_exactly() {
+    let _appkit = crate::appkit_test_lock();
     let (_dir, mut store) = temp_store();
     let source = Board::new();
     pasteboard::write(&source, &rich_reps());

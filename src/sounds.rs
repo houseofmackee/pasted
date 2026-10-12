@@ -164,6 +164,7 @@ mod tests {
 
     #[test]
     fn macos_loads_both_sounds() {
+        let _appkit = crate::appkit_test_lock();
         for sound in [Sound::Copy, Sound::Paste] {
             let data = NSData::with_bytes(&wav(&samples(sound)));
             let loaded = NSSound::initWithData(NSSound::alloc(), &data);

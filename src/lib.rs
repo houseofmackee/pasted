@@ -31,3 +31,12 @@ pub mod stats_data;
 pub mod store;
 pub mod transform;
 pub mod ui;
+
+/// Shared by unit tests that use AppKit objects (pasteboards, sounds), so
+/// they run one at a time: run in parallel, they occasionally crashed the
+/// test process on CI.
+#[cfg(test)]
+pub(crate) fn appkit_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
