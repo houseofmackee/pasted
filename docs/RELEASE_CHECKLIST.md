@@ -10,7 +10,7 @@ Work through this for every release, on an Apple silicon Mac. Copy it into the r
 - [ ] CI is green on master (it also runs `cargo deny check`).
 - [ ] Version bumped in `Cargo.toml` and `CFBundleVersion` in `macos/Info.plist`; `scripts/dist.sh` succeeds locally and prints the checksums.
 - [ ] Push the tag (`git tag vX.Y.Z && git push origin master vX.Y.Z`); the Release workflow passes and the release has the DMG, zip and `SHA256SUMS.txt`.
-- [ ] The published build is signed with the release certificate, not ad hoc: `codesign -dr - /Applications/Pasted.app` shows `certificate root = H"d1099b0b0d7763351358843583c6a08fbbe70d41"` (otherwise users lose their Accessibility permission).
+- [ ] The published build is signed with the Developer ID and notarized: `spctl -a -vv /Applications/Pasted.app` says "accepted, source=Notarized Developer ID" and `codesign -dr - /Applications/Pasted.app` shows `certificate leaf[subject.OU] = ZD5VPNGP3T` (another signature would make users lose their Accessibility permission).
 - [ ] After installing over the previous release, Accessibility is still allowed (welcome window shows "Allowed") without granting it again.
 
 ## 2. Install from the DMG
@@ -18,7 +18,7 @@ Work through this for every release, on an Apple silicon Mac. Copy it into the r
 Use the DMG itself, downloaded the way users get it (so it carries the quarantine flag), on a Mac or user account without a previous install where possible.
 
 - [ ] The DMG opens and shows Pasted, the Applications link and "Read Me First.txt".
-- [ ] After dragging to Applications, the first launch is blocked; the steps in "Read Me First.txt" open it. The checksum matches `SHA256SUMS.txt`.
+- [ ] After dragging to Applications, Pasted opens without a Gatekeeper warning. The checksum matches `SHA256SUMS.txt`.
 - [ ] The welcome window appears once, with the correct shortcut. Accessibility status changes to Allowed within a few seconds of granting it, without restarting.
 - [ ] Upgrading over the previous release keeps history, pinboards, settings and (if enabled) encryption.
 - [ ] Launch at login works after a restart.

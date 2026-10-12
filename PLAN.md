@@ -36,7 +36,7 @@ Pasted is a native macOS clipboard manager written in Rust, modeled on [Paste](h
 | Logging | `tracing` + `tracing-oslog` | Shows up in Console.app. |
 | Launch at login | `SMAppService` (macOS 13+) | Modern, no helper app. |
 | Updates | None for now (Sparkle 2 deferred) | Users download new DMGs by hand until updates are revisited. |
-| Packaging | `scripts/bundle.sh` assembles and signs `Pasted.app`; a DMG for direct download | Reproducible from CLI. Notarization deferred. |
+| Packaging | `scripts/bundle.sh` assembles and signs `Pasted.app`; `scripts/dist.sh` notarizes and builds the DMG and zip for direct download | Reproducible from CLI and GitHub Actions. |
 
 Minimum macOS: 14.0 (Sonoma). Set in `.cargo/config.toml` and `macos/Info.plist`.
 
@@ -157,7 +157,7 @@ Cargo project, git repo, macOS-only build guard, Info.plist template, deployment
 - Rule engine, transforms, snippets, encryption, statistics, MCP server, export.
 
 **Phase 6: distribution**
-- Bundle script (arm64 build, assemble `.app`, copy `Info.plist`, icons), codesign, DMG for direct download. Notarization, stapling and Sparkle are deferred (section 9).
+- Bundle script (arm64 build, assemble `.app`, copy `Info.plist`, icons), codesign with a Developer ID, notarization and stapling of the app and DMG, DMG and zip for direct download. Sparkle is deferred (section 9).
 - Launch at login via `SMAppService`.
 
 **Phase 7: sync**
@@ -298,10 +298,10 @@ Excluded apps and rules live in the Core Data store or preferences depending on 
 ## 9. Decisions and deferred items
 
 - **License**: open source, dual licensed MIT OR Apache-2.0 (Rust ecosystem convention). Not a paid product.
-- **Deferred: bundle identifier and signing team.** `io.pasted.app` stays a placeholder until a real Apple Developer team exists. Revisit before Phase 6 notarization.
+- **Bundle identifier: `io.github.houseofmackee.pasted`** (0.3.0, matching CleanShotZ), replacing the placeholder `io.pasted.app`. The encryption key moves to the new Keychain item on first use; launch at login re-registers itself; users grant Accessibility once more (together with the signing change below).
 - **Distribution: direct-download DMG, Apple silicon only.** No universal binary, no Mac App Store.
-- **Signing: self-signed release certificate.** Until a Developer ID exists, releases are signed with "Pasted Release Signing" (self-signed, valid to 2046, SHA-1 D1:09:9B:0B:0D:77:63:35:13:58:84:35:83:C6:A0:8F:BB:E7:0D:41), kept in the maintainer's login keychain and, as a password-protected .p12, in the repository secrets `RELEASE_CERT_P12_BASE64` and `RELEASE_CERT_PASSWORD` for the release workflow. The designated requirement is the bundle id plus this certificate, so Accessibility permission survives updates (ad-hoc builds lost it every time). Keep an encrypted backup of the identity: losing it means every user grants the permission again.
+- **Signing: Developer ID, notarized** (0.3.0). Releases are signed with "Developer ID Application: MacKenzie Glanzer (ZD5VPNGP3T)", the same team as CleanShotZ, with the hardened runtime and a secure timestamp; the app and the DMG are notarized with an App Store Connect API key and stapled. The designated requirement is the bundle id plus the team, so Accessibility permission survives updates. Secrets: `DEVELOPER_ID_P12_BASE64`, `DEVELOPER_ID_P12_PASSWORD`, `NOTARY_API_KEY_BASE64`; variables `APPLE_TEAM_ID`, `NOTARY_KEY_ID`, `NOTARY_ISSUER_ID`. 0.2.1 to 0.2.2 used the self-signed "Pasted Release Signing" certificate, now only a fallback for local builds without a Developer ID (`scripts/lib.sh`).
 - **Releases come from GitHub Actions** (2026-10-11, aligned with CleanShotZ). CI (`.github/workflows/ci.yml`) runs fmt, clippy in debug and release, tests, a bundle build and `cargo deny` on master and pull requests. Pushing a `v*` tag runs `.github/workflows/release.yml`, which checks the tag against `Cargo.toml`, signs, runs `scripts/dist.sh` and publishes the DMG, zip and `SHA256SUMS.txt` as a pre-release; it becomes a regular release once the manual checks in `docs/RELEASE_CHECKLIST.md` are done.
-- **Deferred: notarization and Sparkle updates.** Without notarization, macOS blocks the first launch; users click Open Anyway in System Settings > Privacy & Security (or run `xattr -dr com.apple.quarantine /Applications/Pasted.app`). The DMG's "Read Me First.txt" and the release notes explain this.
+- **Deferred: Sparkle updates.** Needs its own EdDSA key (not CleanShotZ's) and an appcast; until then users download new DMGs by hand.
 - **Performance: no further tuning planned.** Current speed is good for day-to-day use (searches 0.1 to 10 ms and the statistics report about 0.55 s, both at 100k items).
 - **Deferred: iCloud sync.** Phase 7 is on hold. Revisit later, including whether a folder-based sync (iCloud Drive/Dropbox) should come before CloudKit.

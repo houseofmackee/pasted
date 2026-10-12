@@ -1,4 +1,8 @@
 #!/bin/sh
+# Superseded since 0.3.0: releases are signed with a Developer ID and
+# notarized (see scripts/lib.sh and .github/workflows/release.yml). The
+# self-signed identity is only a fallback for local builds.
+#
 # Creates the self-signed release signing identity, imports it into the
 # login keychain (so local release builds match CI), and exports it to
 # target/release-cert for the release workflow's secrets.

@@ -31,9 +31,9 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 
 Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), check it against `SHA256SUMS.txt` from the same release (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`; older releases have a `.sha256` file instead), open it and drag Pasted into Applications.
 
-Pasted is not notarized yet, so macOS blocks the first launch. Open it once, click Done, then click **Open Anyway** in System Settings > Privacy & Security. If that button does not appear, run `xattr -dr com.apple.quarantine /Applications/Pasted.app`. The DMG includes these steps in "Read Me First.txt".
+From 0.3.0 on, releases are signed with a Developer ID (MacKenzie Glanzer, team `ZD5VPNGP3T`) and notarized by Apple, so Pasted opens like any other app and the Accessibility permission carries over to new versions. Check a download with `spctl -a -vv /Applications/Pasted.app` ("Notarized Developer ID") or `codesign -dr - /Applications/Pasted.app` (`certificate leaf[subject.OU] = ZD5VPNGP3T`).
 
-Releases from 0.2.1 on are signed with the project's self-signed "Pasted Release Signing" certificate (SHA-1 `D1:09:9B:0B:0D:77:63:35:13:58:84:35:83:C6:A0:8F:BB:E7:0D:41`), so the Accessibility permission carries over to new versions. Check a download with `codesign -dr - /Applications/Pasted.app`, which should show `certificate root = H"d1099b0b0d7763351358843583c6a08fbbe70d41"`. Coming from 0.2.0 or earlier, grant the permission once more after updating.
+0.3.0 also changed the bundle identifier from `io.pasted.app` to `io.github.houseofmackee.pasted`. Coming from 0.2.x or earlier, macOS asks for Accessibility permission once more (the welcome window opens the right System Settings page), launch at login is registered again by itself, and an encryption key is moved to the new Keychain item automatically (macOS may ask once to allow that). 0.2.x releases were not notarized: their first launch needs **Open Anyway** in System Settings > Privacy & Security, as their "Read Me First.txt" explains.
 
 ## Build and run
 
@@ -41,7 +41,7 @@ Requires an Apple silicon Mac with macOS 14 or later and a Rust toolchain.
 
 ```sh
 cargo run --release            # run from the terminal
-scripts/bundle.sh              # build and sign dist/Pasted.app (release certificate if present, else ad hoc)
+scripts/bundle.sh              # build and sign dist/Pasted.app (Developer ID if present; see scripts/lib.sh)
 scripts/make_dmg.sh            # build dist/Pasted-<version>-arm64.dmg and its .sha256, then mount and check it
 scripts/dist.sh                # make_dmg.sh, plus a zip and SHA256SUMS.txt: everything a release uploads
 scripts/make_icon.sh           # rebuild macos/AppIcon.icns after editing macos/AppIcon.svg (needs librsvg)
@@ -168,7 +168,7 @@ Excluded apps and your own ignore patterns still mean never saved.
 
 Turn it on in Settings > Privacy > Encryption, or with `pasted encryption enable` while the app is not running (`status` and `disable` work the same way). Pasted then:
 
-- creates a random key in your login Keychain (item `io.pasted.app`),
+- creates a random key in your login Keychain (item `io.github.houseofmackee.pasted`; versions before 0.3.0 used `io.pasted.app`, and the key is moved automatically),
 - encrypts the history database with SQLCipher (AES-256, using macOS CommonCrypto),
 - encrypts each stored image and file with AES-256-GCM under a name that does not reveal its content.
 
@@ -275,7 +275,7 @@ Releases are built and published by GitHub Actions, not from a local machine. Bu
 git tag v0.3.0 && git push origin master v0.3.0
 ```
 
-`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the "Pasted Release Signing" certificate from the repository secrets `RELEASE_CERT_P12_BASE64` and `RELEASE_CERT_PASSWORD`, runs `scripts/dist.sh` and publishes the DMG, zip and `SHA256SUMS.txt`. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
+`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the Developer ID from the repository secrets `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`, notarizes the app and the DMG with the App Store Connect API key (`NOTARY_API_KEY_BASE64` secret; `APPLE_TEAM_ID`, `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` variables), refuses to publish anything Gatekeeper would block, and publishes the DMG, zip and `SHA256SUMS.txt`. Locally, `scripts/dist.sh` does the same when the Developer ID is in the keychain and `PASTED_NOTARY_KEY`, `PASTED_NOTARY_KEY_ID` and `PASTED_NOTARY_ISSUER` are set. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
 
 See [PLAN.md](PLAN.md) for the roadmap.
 

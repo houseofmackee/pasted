@@ -28,9 +28,18 @@ const NONCE_LEN: usize = 12;
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 const KEYCHAIN_ACCOUNT: &str = "history-encryption-key";
 
+/// Keychain item name of versions before 0.3.0, when the bundle id was
+/// `io.pasted.app`; the key is moved from it on first use.
+const LEGACY_KEYCHAIN_SERVICE: &str = "io.pasted.app";
+
 fn keychain_service() -> String {
     // Tests and experiments can use a separate Keychain item.
-    std::env::var("PASTED_KEYCHAIN_SERVICE").unwrap_or_else(|_| "io.pasted.app".into())
+    std::env::var("PASTED_KEYCHAIN_SERVICE").unwrap_or_else(|_| "io.github.houseofmackee.pasted".into())
+}
+
+/// The legacy item to migrate from, unless a test or experiment chose its own.
+fn legacy_keychain_service() -> Option<&'static str> {
+    std::env::var_os("PASTED_KEYCHAIN_SERVICE").is_none().then_some(LEGACY_KEYCHAIN_SERVICE)
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -135,29 +144,62 @@ pub fn database_is_encrypted(db: &Path) -> bool {
 // Keychain
 
 pub fn keychain_load() -> Result<Option<Keys>> {
-    match security_framework::passwords::get_generic_password(&keychain_service(), KEYCHAIN_ACCOUNT) {
+    Ok(load_master(&keychain_service(), legacy_keychain_service())?.map(|m| Keys::from_master(&m)))
+}
+
+/// The master key from `service`, or moved there from `legacy` (the item of
+/// versions before the bundle id changed): saved under the new name and
+/// read back before the old item is removed.
+fn load_master(service: &str, legacy: Option<&str>) -> Result<Option<[u8; 32]>> {
+    if let Some(master) = read_master(service)? {
+        return Ok(Some(master));
+    }
+    let Some(legacy) = legacy else { return Ok(None) };
+    let Some(master) = read_master(legacy)? else { return Ok(None) };
+    write_master(service, &master)?;
+    if read_master(service)? != Some(master) {
+        bail!("moving the encryption key to the new Keychain item failed; the old item {legacy} was kept");
+    }
+    if let Err(e) = security_framework::passwords::delete_generic_password(legacy, KEYCHAIN_ACCOUNT) {
+        tracing::warn!("the old Keychain item {legacy} could not be removed: {e}");
+    }
+    tracing::info!("moved the encryption key from Keychain item {legacy} to {service}");
+    Ok(Some(master))
+}
+
+fn write_master(service: &str, master: &[u8; 32]) -> Result<()> {
+    security_framework::passwords::set_generic_password(service, KEYCHAIN_ACCOUNT, hex(master).as_bytes())
+        .map_err(|e| anyhow!("saving the encryption key to the Keychain: {e}"))
+}
+
+/// The 32-byte master key stored under `service`, if there is one.
+fn read_master(service: &str) -> Result<Option<[u8; 32]>> {
+    match security_framework::passwords::get_generic_password(service, KEYCHAIN_ACCOUNT) {
         Ok(bytes) => {
             let text = String::from_utf8(bytes).context("Keychain item is not text")?;
             let master: [u8; 32] =
                 unhex(text.trim()).and_then(|v| v.try_into().ok()).context("Keychain item is not a 32-byte key")?;
-            Ok(Some(Keys::from_master(&master)))
+            Ok(Some(master))
         }
         Err(e) if e.code() == -25300 => Ok(None), // errSecItemNotFound
-        Err(e) => Err(anyhow!("reading the encryption key from the Keychain: {e}")),
+        Err(e) => Err(anyhow!("reading the encryption key from the Keychain ({service}): {e}")),
     }
 }
 
 fn keychain_save(master: &[u8; 32]) -> Result<()> {
-    security_framework::passwords::set_generic_password(&keychain_service(), KEYCHAIN_ACCOUNT, hex(master).as_bytes())
-        .map_err(|e| anyhow!("saving the encryption key to the Keychain: {e}"))
+    write_master(&keychain_service(), master)
 }
 
 pub fn keychain_delete() -> Result<()> {
-    match security_framework::passwords::delete_generic_password(&keychain_service(), KEYCHAIN_ACCOUNT) {
-        Ok(()) => Ok(()),
-        Err(e) if e.code() == -25300 => Ok(()),
-        Err(e) => Err(anyhow!("removing the encryption key from the Keychain: {e}")),
+    let services = std::iter::once(keychain_service()).chain(legacy_keychain_service().map(str::to_string));
+    for service in services {
+        match security_framework::passwords::delete_generic_password(&service, KEYCHAIN_ACCOUNT) {
+            Ok(()) => {}
+            Err(e) if e.code() == -25300 => {}
+            Err(e) => return Err(anyhow!("removing the encryption key from the Keychain ({service}): {e}")),
+        }
     }
+    Ok(())
 }
 
 // Switching
@@ -298,6 +340,28 @@ mod tests {
     use super::*;
     use crate::search::Query;
     use crate::store::Store;
+
+    /// Uses two throwaway items in the login Keychain; run with
+    /// `cargo test -- --ignored keychain` (CI runners may have no usable Keychain).
+    #[test]
+    #[ignore = "uses the real login Keychain"]
+    fn keychain_key_moves_from_the_legacy_item() {
+        let (new, old) = ("io.github.houseofmackee.pasted.test-new", "io.github.houseofmackee.pasted.test-old");
+        let cleanup = || {
+            let _ = security_framework::passwords::delete_generic_password(new, KEYCHAIN_ACCOUNT);
+            let _ = security_framework::passwords::delete_generic_password(old, KEYCHAIN_ACCOUNT);
+        };
+        cleanup();
+        assert_eq!(load_master(new, Some(old)).unwrap(), None, "nothing anywhere");
+        write_master(old, &[9u8; 32]).unwrap();
+        assert_eq!(load_master(new, Some(old)).unwrap(), Some([9u8; 32]), "moved from the old item");
+        assert_eq!(read_master(new).unwrap(), Some([9u8; 32]), "now under the new name");
+        assert_eq!(read_master(old).unwrap(), None, "and the old item is gone");
+        // The new item wins once it exists.
+        write_master(old, &[1u8; 32]).unwrap();
+        assert_eq!(load_master(new, Some(old)).unwrap(), Some([9u8; 32]));
+        cleanup();
+    }
 
     /// Fixed vectors made with the original crates (aes-gcm 0.10, hmac 0.12,
     /// sha2 0.10) and checked with Python's hmac and Apple's CryptoKit. Any

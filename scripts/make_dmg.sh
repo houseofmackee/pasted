@@ -4,11 +4,15 @@
 #
 #   scripts/make_dmg.sh                 builds Pasted.app first (scripts/bundle.sh)
 #   SKIP_BUNDLE=1 scripts/make_dmg.sh   packages the existing dist/Pasted.app
-#   SIGN_IDENTITY="Developer ID Application: ..." also signs the DMG
 #
-# The app is not notarized yet, so the DMG includes a note on opening it.
+# Signed with a Developer ID and given the App Store Connect API key
+# (PASTED_NOTARY_KEY, PASTED_NOTARY_KEY_ID, PASTED_NOTARY_ISSUER; see lib.sh),
+# the app and the DMG are notarized and stapled, so they open like any other
+# app. Otherwise the DMG includes a note on opening an unnotarized app.
 set -eu
 cd "$(dirname "$0")/.."
+. scripts/lib.sh
+choose_identity
 
 if [ -z "${SKIP_BUNDLE:-}" ]; then
     scripts/bundle.sh
@@ -31,17 +35,41 @@ DMG="dist/Pasted-$VERSION-arm64.dmg"
 WORK=$(mktemp -d)
 trap 'hdiutil detach -quiet "$WORK/mnt" 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
+NOTARIZED=""
+if can_notarize; then
+    # The app first, stapled, so the DMG (and dist.sh's zip) carry the ticket.
+    ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/Pasted.zip"
+    notarize "$WORK/Pasted.zip"
+    xcrun stapler staple -q "$APP"
+    NOTARIZED=1
+elif is_developer_id; then
+    echo "warning: signed with a Developer ID but not notarized (PASTED_NOTARY_KEY, _KEY_ID and _ISSUER are not set)" >&2
+fi
+
 STAGE="$WORK/Pasted"
 mkdir -p "$STAGE"
 ditto "$APP" "$STAGE/Pasted.app"
 ln -s /Applications "$STAGE/Applications"
-cat > "$STAGE/Read Me First.txt" <<EOF
+if [ -n "$NOTARIZED" ]; then
+    cat > "$STAGE/Read Me First.txt" <<EOF
 Pasted $VERSION for Apple silicon Macs (macOS 14 Sonoma or later)
 
 Install: drag Pasted into Applications, then open it from there.
 
-Pasted is open source and not notarized by Apple yet, so the first time
-you open it macOS says it cannot check it. To open it anyway:
+Pasted lives in the menu bar; press Shift-Command-V to open your clipboard
+history. The welcome window helps you allow Accessibility, which Pasted
+needs to paste into other apps.
+
+Source code and checksums: see the release page you downloaded this from.
+EOF
+else
+    cat > "$STAGE/Read Me First.txt" <<EOF
+Pasted $VERSION for Apple silicon Macs (macOS 14 Sonoma or later)
+
+Install: drag Pasted into Applications, then open it from there.
+
+This build is not notarized by Apple, so the first time you open it macOS
+says it cannot check it. To open it anyway:
 
   1. Open Pasted once and click Done in the warning.
   2. Go to System Settings > Privacy & Security, scroll down and click
@@ -58,11 +86,16 @@ Shift-Command-V to open your clipboard history.
 
 Source code and checksums: see the release page you downloaded this from.
 EOF
+fi
 
 rm -f "$DMG" "$DMG.sha256"
 hdiutil create -quiet -volname "Pasted $VERSION" -srcfolder "$STAGE" -fs HFS+ -format ULMO -ov "$DMG"
-if [ -n "${SIGN_IDENTITY:-}" ]; then
-    codesign --force --sign "$SIGN_IDENTITY" "$DMG"
+if is_developer_id; then
+    codesign --force --timestamp --sign "$SIGN_IDENTITY" "$DMG"
+fi
+if [ -n "$NOTARIZED" ]; then
+    notarize "$DMG"
+    xcrun stapler staple -q "$DMG"
 fi
 
 # Check what a user will get: the image is intact and the app inside is
@@ -82,7 +115,16 @@ retry attach -nobrowse -readonly -mountpoint "$WORK/mnt" "$DMG"
 codesign --verify --strict "$WORK/mnt/Pasted.app"
 [ "$(lipo -archs "$WORK/mnt/Pasted.app/Contents/MacOS/pasted")" = "arm64" ]
 [ -L "$WORK/mnt/Applications" ]
+if [ -n "$NOTARIZED" ]; then
+    # What Gatekeeper decides for a downloaded copy.
+    spctl --assess --type execute "$WORK/mnt/Pasted.app"
+    xcrun stapler validate -q "$WORK/mnt/Pasted.app"
+fi
 hdiutil detach -quiet "$WORK/mnt"
+if [ -n "$NOTARIZED" ]; then
+    spctl --assess --type open --context context:primary-signature "$DMG"
+    xcrun stapler validate -q "$DMG"
+fi
 
 (cd dist && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
 echo "Built $DMG ($(du -h "$DMG" | cut -f1 | tr -d ' '))"

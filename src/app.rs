@@ -78,11 +78,11 @@ const RAW_SNIPPET: i64 = 0xff;
 
 const POLL_INTERVAL: f64 = 0.3;
 /// Posted by `pasted open` to show the shelf of the running app.
-pub const OPEN_NOTIFICATION: &str = "io.pasted.app.open";
+pub const OPEN_NOTIFICATION: &str = "io.github.houseofmackee.pasted.open";
 /// Posted by `pasted settings` to show the Settings window.
-pub const SETTINGS_NOTIFICATION: &str = "io.pasted.app.settings";
+pub const SETTINGS_NOTIFICATION: &str = "io.github.houseofmackee.pasted.settings";
 /// Posted by `pasted stats --show` to show the Statistics window.
-pub const STATS_NOTIFICATION: &str = "io.pasted.app.stats";
+pub const STATS_NOTIFICATION: &str = "io.github.houseofmackee.pasted.stats";
 const MAINTENANCE_INTERVAL: Duration = Duration::from_secs(3600);
 
 define_class!(
@@ -1380,7 +1380,7 @@ fn toggle_encryption() {
             "Pasted creates a key in your login Keychain and uses it to encrypt the history database and stored \
              images and files, so other apps, other users and backups cannot read them.\n\n\
              Keep in mind:\n\
-             \u{2022} If the Keychain item \u{201c}io.pasted.app\u{201d} is deleted, the history cannot be recovered.\n\
+             \u{2022} If the Keychain item \u{201c}io.github.houseofmackee.pasted\u{201d} is deleted, the history cannot be recovered.\n\
              \u{2022} Exports and backups you make are not encrypted.\n\
              \u{2022} FileVault already protects the disk while the Mac is off; this adds protection while you are logged in.\n\
              \u{2022} Earlier unencrypted copies may remain in free disk space until it is reused.\n\n\

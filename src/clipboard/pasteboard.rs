@@ -9,7 +9,7 @@ use crate::model::{Representation, SourceApp, UTI_PLAIN_TEXT};
 
 /// Marker so other clipboard tools know who wrote the pasteboard.
 pub const SOURCE_TYPE: &str = "org.nspasteboard.source";
-pub const BUNDLE_ID: &str = "io.pasted.app";
+pub const BUNDLE_ID: &str = "io.github.houseofmackee.pasted";
 
 pub fn general() -> Retained<NSPasteboard> {
     NSPasteboard::generalPasteboard()
