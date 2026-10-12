@@ -153,7 +153,11 @@ impl Shelf {
         panel.setContentView(Some(&effect));
 
         let search = NSSearchField::initWithFrame(NSSearchField::alloc(mtm), rect(16.0, 0.0, 260.0, 28.0));
-        search.setPlaceholderString(Some(&ns("Search  (type: app: device: board:)")));
+        set_placeholder(&search, "Search  (type: app: device: board:)");
+        // Opaque, so whatever is behind the translucent shelf does not show
+        // through and wash out the text.
+        search.setDrawsBackground(true);
+        search.setBackgroundColor(Some(&NSColor::textBackgroundColor()));
         search.setAccessibilityLabel(Some(&ns("Search clipboard history")));
         search.setAccessibilityHelp(Some(&ns(
             "Type to search. Left and right arrows choose an item, Return pastes it, Tab switches pinboards, Escape closes.",
@@ -366,7 +370,7 @@ impl Shelf {
             Some((name, query)) => format!("Search in {name}  ({query})"),
             None => "Search  (type: app: device: board:)".to_string(),
         };
-        self.search.setPlaceholderString(Some(&ns(&placeholder)));
+        set_placeholder(&self.search, &placeholder);
     }
 
     /// The open pinboard, if any.
@@ -633,6 +637,24 @@ fn tab_background(selected: bool) -> Retained<NSColor> {
 }
 
 /// Tab label, with a dot in the pinboard's color when there is one.
+/// The search field's hint at 70% of the label color: the default
+/// placeholder color is too faint to read on the translucent shelf.
+fn set_placeholder(search: &NSSearchField, text: &str) {
+    let hint = NSMutableAttributedString::initWithString(NSMutableAttributedString::alloc(), &ns(text));
+    let all = NSRange::new(0, hint.length());
+    let font = search.font().unwrap_or_else(|| NSFont::systemFontOfSize(13.0));
+    // SAFETY: standard attribute keys with values of the documented types.
+    unsafe {
+        hint.addAttribute_value_range(
+            NSForegroundColorAttributeName,
+            &NSColor::labelColor().colorWithAlphaComponent(0.7),
+            all,
+        );
+        hint.addAttribute_value_range(NSFontAttributeName, &font, all);
+    }
+    search.setPlaceholderAttributedString(Some(&hint));
+}
+
 /// A tab label: pinboards start with a colored dot, smart pinboards with a
 /// magnifier in the pinboard's color.
 fn tab_title(name: &str, selected: bool, color: Option<u32>, smart: bool) -> Retained<NSAttributedString> {

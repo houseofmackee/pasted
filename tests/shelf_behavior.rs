@@ -69,7 +69,8 @@ fn main() {
     shelf.select_board(Some(links), &store);
     check(ids(&shelf) == [github, rust], "smart pinboard shows only links, newest first", &mut failures);
     check(shelf.in_smart_board(), "a smart pinboard is open", &mut failures);
-    let placeholder = shelf.search.placeholderString().map(|p| p.to_string()).unwrap_or_default();
+    // Set as styled text, in a readable color (not the faint default).
+    let placeholder = shelf.search.placeholderAttributedString().map(|p| p.string().to_string()).unwrap_or_default();
     check(
         placeholder.contains("Links") && placeholder.contains("type:link"),
         "placeholder shows the saved search",
