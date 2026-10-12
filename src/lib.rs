@@ -31,6 +31,7 @@ pub mod stats_data;
 pub mod store;
 pub mod transform;
 pub mod ui;
+pub mod updates;
 
 /// Shared by unit tests that use AppKit objects (pasteboards, sounds), so
 /// they run one at a time: run in parallel, they occasionally crashed the

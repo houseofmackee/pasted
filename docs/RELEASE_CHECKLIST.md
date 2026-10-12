@@ -60,4 +60,6 @@ Open the shelf with the shortcut in each situation, then paste into the frontmos
 
 ## 7. Publish
 
-- [ ] Everything above passed: on GitHub, edit the release (published as a pre-release) and untick "Set as a pre-release" so it becomes the latest release.
+- [ ] The release has `appcast.xml` next to the DMG, zip and `SHA256SUMS.txt`.
+- [ ] Everything above passed: on GitHub, edit the release (published as a pre-release) and untick "Set as a pre-release" so it becomes the latest release. Only now does Sparkle offer it.
+- [ ] In the previous version, Check for Updates… offers the new one, and installing it relaunches Pasted with the Accessibility permission still allowed.

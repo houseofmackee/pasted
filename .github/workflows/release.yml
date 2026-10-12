@@ -9,9 +9,15 @@ name: Release
 #   DEVELOPER_ID_P12_BASE64    the Developer ID Application certificate and key
 #   DEVELOPER_ID_P12_PASSWORD  its password
 #   NOTARY_API_KEY_BASE64      an App Store Connect API key (.p8, Developer role)
+#   SPARKLE_PRIVATE_KEY        the EdDSA key that signs updates and appcast.xml
+#                              (Pasted's own, Keychain account "pasted")
 # and these variables: APPLE_TEAM_ID, NOTARY_KEY_ID, NOTARY_ISSUER_ID.
 # Every release must be signed by the same team: the signature is what keeps
 # users' Accessibility permission across updates.
+#
+# Releases are published as pre-releases. The app's update feed is the
+# latest regular release's appcast.xml, so Sparkle offers a version only
+# once it is marked as a regular release on GitHub.
 
 on:
   push:
@@ -77,12 +83,24 @@ jobs:
           fi
           echo "$KEY_BASE64" | base64 --decode > "$RUNNER_TEMP/notary.p8"
 
+      - name: Write the update signing key
+        env:
+          SPARKLE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_KEY" ]; then
+            echo "::error::SPARKLE_PRIVATE_KEY must be set"
+            exit 1
+          fi
+          printf '%s\n' "$SPARKLE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          chmod 600 "$RUNNER_TEMP/sparkle_key"
+
       - name: Build, notarize and package
         env:
           PASTED_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
           PASTED_NOTARY_KEY: ${{ runner.temp }}/notary.p8
           PASTED_NOTARY_KEY_ID: ${{ vars.NOTARY_KEY_ID }}
           PASTED_NOTARY_ISSUER: ${{ vars.NOTARY_ISSUER_ID }}
+          PASTED_SPARKLE_KEY: ${{ runner.temp }}/sparkle_key
         run: |
           if [ -z "$PASTED_TEAM_ID" ] || [ -z "$PASTED_NOTARY_KEY_ID" ] || [ -z "$PASTED_NOTARY_ISSUER" ]; then
             echo "::error::the APPLE_TEAM_ID, NOTARY_KEY_ID and NOTARY_ISSUER_ID variables must be set"
@@ -91,10 +109,12 @@ jobs:
           scripts/dist.sh
           # Fail rather than publish anything Gatekeeper would block.
           version="${GITHUB_REF_NAME#v}"
-          xcrun stapler validate "dist/Pasted-$version-arm64.dmg"
+          . scripts/lib.sh
+          validate_ticket "dist/Pasted-$version-arm64.dmg"
           spctl --assess --type open --context context:primary-signature "dist/Pasted-$version-arm64.dmg"
-          xcrun stapler validate dist/Pasted.app
+          validate_ticket dist/Pasted.app
           spctl --assess --type execute dist/Pasted.app
+          test -s dist/appcast.xml
 
       - name: Publish the release
         env:
@@ -109,14 +129,16 @@ jobs:
 
           Requires macOS 14 or later on Apple silicon. Checksums are in \`SHA256SUMS.txt\`.
 
+          From 0.3.0 on, Pasted updates itself (Check for Updates… in the menu bar icon's menu; Settings > General turns automatic checks on or off). It is offered a version once that release is no longer a pre-release.
+
           Coming from 0.2.x or earlier: Pasted now has a Developer ID signature and a new identifier (\`io.github.houseofmackee.pasted\`), so macOS asks for Accessibility permission once more; the welcome window opens System Settings for you. Later updates keep it.
           NOTES
           gh release create "$GITHUB_REF_NAME" --prerelease --generate-notes --notes-file "$notes" \
             --title "Pasted $version" \
-            dist/Pasted-$version-arm64.dmg dist/Pasted-$version-arm64.zip dist/SHA256SUMS.txt
+            dist/Pasted-$version-arm64.dmg dist/Pasted-$version-arm64.zip dist/SHA256SUMS.txt dist/appcast.xml
 
       - name: Remove the temporary keychain and key
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
-          rm -f "$RUNNER_TEMP/notary.p8"
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/sparkle_key"

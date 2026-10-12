@@ -54,6 +54,7 @@ const CLEAR_HISTORY: u8 = 18;
 const PASTE_STACK: u8 = 19;
 const SETTINGS: u8 = 20;
 const STATISTICS: u8 = 21;
+const CHECK_UPDATES: u8 = 22;
 pub const IMPORT_PASTE_TAG: u8 = IMPORT_PASTE;
 pub const CLEAR_HISTORY_TAG: u8 = CLEAR_HISTORY;
 pub const OPEN_SETTINGS_TAG: u8 = OPEN_SETTINGS;
@@ -500,6 +501,7 @@ pub fn run() -> Result<()> {
     }
     crate::ocr::spawn_worker();
     crate::link_preview::spawn_worker(&LINK_PREVIEWS_ENABLED);
+    crate::updates::start(mtm);
     show_welcome_once();
     tracing::info!("Pasted is running");
     app.run();
@@ -803,6 +805,12 @@ impl App {
         add("Settings\u{2026}", SETTINGS);
         add("Welcome\u{2026}", WELCOME);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+        if crate::updates::available() {
+            match crate::updates::found() {
+                Some(version) => add(&format!("Update to Pasted {version}\u{2026}"), CHECK_UPDATES),
+                None => add("Check for Updates\u{2026}", CHECK_UPDATES),
+            };
+        }
         add("About Pasted", ABOUT);
         add("Quit Pasted", QUIT);
         self.status_menu = menu;
@@ -1866,6 +1874,8 @@ fn show_status_menu() {
     // before the menu returns.
     let Some((item, menu)) = with(|app| {
         app.close_shelf();
+        // Fresh, so an update found in the background shows up.
+        app.rebuild_status_menu();
         (app.status_item.clone(), app.status_menu.clone())
     }) else {
         return;
@@ -2083,6 +2093,7 @@ fn dispatch(raw_tag: isize) {
             });
         }
         ABOUT => about(),
+        CHECK_UPDATES => crate::updates::check(mtm()),
         QUIT => NSApplication::sharedApplication(mtm()).terminate(None),
         ITEM_SHOW_HISTORY => {
             with(|app| {

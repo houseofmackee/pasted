@@ -20,11 +20,22 @@ cp macos/Info.plist "$APP/Contents/Info.plist"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 cp macos/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-# Notarization requires the hardened runtime and a secure timestamp.
-if is_developer_id; then
-    codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$APP"
-else
-    codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$APP"
-fi
+# Sparkle for updates, without the XPC services (only sandboxed apps use
+# them); the app loads it at runtime.
+SPARKLE=$(sparkle_dir)
+mkdir -p "$APP/Contents/Frameworks"
+ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+rm -rf "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices" \
+    "$APP/Contents/Frameworks/Sparkle.framework/XPCServices"
+cp "$SPARKLE/LICENSE" "$APP/Contents/Resources/Sparkle-LICENSE.txt"
+
+# Inside out with the same identity: Sparkle's executables, the framework,
+# then the app. Notarization requires the hardened runtime and a timestamp.
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+for part in "$FRAMEWORK/Versions/B/Autoupdate" "$FRAMEWORK/Versions/B/Updater.app" "$FRAMEWORK"; do
+    sign_with_identity "$part"
+done
+sign_with_identity "$APP"
+codesign --verify --strict --deep "$APP"
 codesign --verify --strict "$APP"
 echo "Built $APP ($VERSION), $(codesign -dr - "$APP" 2>&1 | grep designated)"

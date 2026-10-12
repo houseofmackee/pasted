@@ -2,7 +2,7 @@
 
 A fast, private clipboard manager for macOS, written in Rust. Inspired by [Paste](https://pasteapp.io), with history import from an existing Paste installation.
 
-Everything stays on your Mac: no accounts and no telemetry, with optional encryption at rest. The only network access is fetching link previews, which you can turn off.
+Everything stays on your Mac: no accounts and no telemetry, with optional encryption at rest. The only network access is fetching link previews and checking for updates, both of which you can turn off.
 
 ## Features
 
@@ -34,6 +34,12 @@ Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), c
 From 0.3.0 on, releases are signed with a Developer ID (MacKenzie Glanzer, team `ZD5VPNGP3T`) and notarized by Apple, so Pasted opens like any other app and the Accessibility permission carries over to new versions. Check a download with `spctl -a -vv /Applications/Pasted.app` ("Notarized Developer ID") or `codesign -dr - /Applications/Pasted.app` (`certificate leaf[subject.OU] = ZD5VPNGP3T`).
 
 0.3.0 also changed the bundle identifier from `io.pasted.app` to `io.github.houseofmackee.pasted`. Coming from 0.2.x or earlier, macOS asks for Accessibility permission once more (the welcome window opens the right System Settings page), launch at login is registered again by itself, and an encryption key is moved to the new Keychain item automatically (macOS may ask once to allow that). 0.2.x releases were not notarized: their first launch needs **Open Anyway** in System Settings > Privacy & Security, as their "Read Me First.txt" explains.
+
+## Updates
+
+From 0.3.0 on, Pasted updates itself with [Sparkle](https://sparkle-project.org): choose **Check for Updates…** in the menu bar icon's menu (it reads **Update to Pasted X…** when a newer version was found), and turn automatic checks on or off in Settings > General (Pasted asks on its second launch). Updates are signed with Pasted's own EdDSA key and with the same Developer ID, so they install without warnings and keep the Accessibility permission.
+
+New releases are published as pre-releases first. The update feed is the latest regular release's `appcast.xml`, so Pasted is only offered a version after it has passed the manual release checks and been marked as a regular release. Checking for updates contacts github.com and nothing else.
 
 ## Build and run
 

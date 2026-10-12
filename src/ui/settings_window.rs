@@ -270,6 +270,7 @@ pub struct SettingsWindow {
     launch_at_login: Retained<NSButton>,
     link_previews: Retained<NSButton>,
     fuzzy_search: Retained<NSButton>,
+    check_updates: Retained<NSButton>,
     trim_whitespace: Retained<NSButton>,
     clean_links: Retained<NSButton>,
     expand_placeholders: Retained<NSButton>,
@@ -431,6 +432,7 @@ impl SettingsWindow {
             "Launch Pasted at login",
             "Show link previews (fetches page titles and images)",
             "Search also shows close matches (typos, abbreviations)",
+            "Check for updates automatically",
         ]
         .iter()
         .enumerate()
@@ -443,7 +445,7 @@ impl SettingsWindow {
         }
         let login_note = f.note("", CONTROL_X + 20.0);
         add_tab("General", &f.view);
-        let [sounds, launch_at_login, link_previews, fuzzy_search]: [Retained<NSButton>; 4] =
+        let [sounds, launch_at_login, link_previews, fuzzy_search, check_updates]: [Retained<NSButton>; 5] =
             boxes.try_into().unwrap_or_else(|_| unreachable!());
 
         // Pasting
@@ -807,6 +809,7 @@ impl SettingsWindow {
             launch_at_login,
             link_previews,
             fuzzy_search,
+            check_updates,
             trim_whitespace,
             clean_links,
             expand_placeholders,
@@ -875,6 +878,9 @@ impl SettingsWindow {
         set_checked(&self.launch_at_login, g.launch_at_login);
         set_checked(&self.link_previews, g.link_previews);
         set_checked(&self.fuzzy_search, g.fuzzy_search);
+        // Kept by Sparkle itself, not in settings.toml; only Pasted.app has Sparkle.
+        set_checked(&self.check_updates, crate::updates::checks_automatically());
+        self.check_updates.setEnabled(crate::updates::available());
         set_checked(&self.trim_whitespace, s.pasting.trim_whitespace);
         set_checked(&self.clean_links, s.pasting.clean_links);
         set_checked(&self.expand_placeholders, s.pasting.expand_placeholders);
@@ -956,6 +962,9 @@ impl SettingsWindow {
         g.launch_at_login = checked(&self.launch_at_login);
         g.link_previews = checked(&self.link_previews);
         g.fuzzy_search = checked(&self.fuzzy_search);
+        if crate::updates::available() {
+            crate::updates::set_checks_automatically(checked(&self.check_updates));
+        }
         s.pasting.trim_whitespace = checked(&self.trim_whitespace);
         s.pasting.clean_links = checked(&self.clean_links);
         s.pasting.expand_placeholders = checked(&self.expand_placeholders);

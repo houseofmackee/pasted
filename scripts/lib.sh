@@ -74,3 +74,60 @@ notarize() {
     fi
     echo "Notarized $1"
 }
+
+# staple FILE: attaches the notarization ticket. Right after notarization
+# the ticket may not be published yet (stapler exits with 65 or 68), so
+# this retries for a while.
+staple() {
+    for attempt in 1 2 3 4 5 6; do
+        xcrun stapler staple -q "$1" && return 0
+        echo "stapling $1 failed (attempt $attempt); retrying" >&2
+        sleep 15
+    done
+    xcrun stapler staple "$1"
+}
+
+# validate_ticket FILE: checks the stapled ticket, retrying like staple
+# (the lookup can fail with 68 until the ticket is published).
+validate_ticket() {
+    for attempt in 1 2 3 4 5 6; do
+        xcrun stapler validate -q "$1" && return 0
+        echo "validating the ticket of $1 failed (attempt $attempt); retrying" >&2
+        sleep 15
+    done
+    xcrun stapler validate "$1"
+}
+
+# Sparkle (updates), downloaded once into target/sparkle and checked against
+# its pinned checksum. Prints the directory.
+SPARKLE_VERSION=2.10.0
+SPARKLE_SHA256=c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c
+
+sparkle_dir() {
+    dir="target/sparkle/$SPARKLE_VERSION"
+    if [ ! -d "$dir/Sparkle.framework" ]; then
+        mkdir -p target/sparkle
+        archive="target/sparkle/Sparkle-$SPARKLE_VERSION.tar.xz"
+        curl -sSfL -o "$archive" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+        if [ "$(shasum -a 256 "$archive" | cut -d' ' -f1)" != "$SPARKLE_SHA256" ]; then
+            rm -f "$archive"
+            echo "error: Sparkle $SPARKLE_VERSION does not match its pinned checksum" >&2
+            return 1
+        fi
+        rm -rf "$dir.partial" && mkdir -p "$dir.partial"
+        tar -xf "$archive" -C "$dir.partial"
+        mv "$dir.partial" "$dir"
+    fi
+    echo "$dir"
+}
+
+# sign_with_identity PATH: the hardened runtime, plus a secure timestamp for
+# a Developer ID (Apple's timestamp service only accepts its certificates).
+sign_with_identity() {
+    if is_developer_id; then
+        codesign --force --options runtime --timestamp --sign "$SIGN_IDENTITY" "$1"
+    else
+        codesign --force --options runtime --timestamp=none --sign "$SIGN_IDENTITY" "$1"
+    fi
+}

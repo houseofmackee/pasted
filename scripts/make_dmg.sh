@@ -40,7 +40,7 @@ if can_notarize; then
     # The app first, stapled, so the DMG (and dist.sh's zip) carry the ticket.
     ditto -c -k --sequesterRsrc --keepParent "$APP" "$WORK/Pasted.zip"
     notarize "$WORK/Pasted.zip"
-    xcrun stapler staple -q "$APP"
+    staple "$APP"
     NOTARIZED=1
 elif is_developer_id; then
     echo "warning: signed with a Developer ID but not notarized (PASTED_NOTARY_KEY, _KEY_ID and _ISSUER are not set)" >&2
@@ -95,7 +95,7 @@ if is_developer_id; then
 fi
 if [ -n "$NOTARIZED" ]; then
     notarize "$DMG"
-    xcrun stapler staple -q "$DMG"
+    staple "$DMG"
 fi
 
 # Check what a user will get: the image is intact and the app inside is
@@ -118,12 +118,12 @@ codesign --verify --strict "$WORK/mnt/Pasted.app"
 if [ -n "$NOTARIZED" ]; then
     # What Gatekeeper decides for a downloaded copy.
     spctl --assess --type execute "$WORK/mnt/Pasted.app"
-    xcrun stapler validate -q "$WORK/mnt/Pasted.app"
+    validate_ticket "$WORK/mnt/Pasted.app"
 fi
 hdiutil detach -quiet "$WORK/mnt"
 if [ -n "$NOTARIZED" ]; then
     spctl --assess --type open --context context:primary-signature "$DMG"
-    xcrun stapler validate -q "$DMG"
+    validate_ticket "$DMG"
 fi
 
 (cd dist && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256")
