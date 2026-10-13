@@ -8,6 +8,7 @@ Work through this for every release, on an Apple silicon Mac. Copy it into the r
 - [ ] `cargo test` passes, including the pasteboard integration tests and the card layout snapshot (`tests/card_layout.rs`). If the snapshot changed on purpose, review the diff and run `UPDATE_SNAPSHOTS=1 cargo test --test card_layout`.
 - [ ] `cargo bench --bench store`: every search line says `ok` (20 ms budget at 100,000 items). Note the numbers in the release issue to spot regressions.
 - [ ] CI is green on master (it also runs `cargo deny check`).
+- [ ] `CHANGELOG.md`: the Unreleased notes moved into a new `## [X.Y.Z] - YYYY-MM-DD` section (plus its compare link at the bottom). This is what the update window and the GitHub release show; the release workflow stops if the section is missing.
 - [ ] Version bumped in `Cargo.toml` and `CFBundleVersion` in `macos/Info.plist`; `scripts/dist.sh` succeeds locally and prints the checksums.
 - [ ] Push the tag (`git tag vX.Y.Z && git push origin master vX.Y.Z`); the Release workflow passes and the release has the DMG, zip and `SHA256SUMS.txt`.
 - [ ] The published build is signed with the Developer ID and notarized: `spctl -a -vv /Applications/Pasted.app` says "accepted, source=Notarized Developer ID" and `codesign -dr - /Applications/Pasted.app` shows `certificate leaf[subject.OU] = ZD5VPNGP3T` (another signature would make users lose their Accessibility permission).

@@ -46,6 +46,9 @@ jobs:
             exit 1
           fi
 
+      - name: Check the changelog has notes for this version
+        run: scripts/release_notes.sh "${GITHUB_REF_NAME#v}"
+
       - name: Import the signing certificate
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_P12_BASE64 }}
@@ -124,7 +127,13 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           notes="$RUNNER_TEMP/notes.md"
-          cat > "$notes" <<NOTES
+          {
+            echo "## What's new"
+            echo
+            scripts/release_notes.sh "$version" | sed 's/^###/####/'
+            echo
+          } > "$notes"
+          cat >> "$notes" <<NOTES
           ## Installing
 
           Download \`Pasted-$version-arm64.dmg\` (or the zip), open it and drag Pasted into Applications. It is signed with a Developer ID and notarized by Apple, so it opens like any other app.

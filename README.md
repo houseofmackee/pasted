@@ -310,7 +310,7 @@ GitHub Actions runs `cargo fmt --check`, `cargo clippy -D warnings` (debug and r
 
 ### Releasing
 
-Releases are built and published by GitHub Actions, not from a local machine. Bump the version in `Cargo.toml` (and `CFBundleVersion` in `macos/Info.plist`), commit, then push a matching tag:
+Releases are built and published by GitHub Actions, not from a local machine. Move the Unreleased notes in [CHANGELOG.md](CHANGELOG.md) into a section for the new version (it becomes the text of the update window and the GitHub release), bump the version in `Cargo.toml` (and `CFBundleVersion` in `macos/Info.plist`), commit, then push a matching tag:
 
 ```sh
 git tag vX.Y.Z && git push origin master vX.Y.Z
