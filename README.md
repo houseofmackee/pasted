@@ -46,7 +46,15 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 
 ## Install
 
-Download `Pasted-<version>-arm64.dmg` (Apple silicon Macs, macOS 14 or later), check it against `SHA256SUMS.txt` from the same release (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`; older releases have a `.sha256` file instead), open it and drag Pasted into Applications.
+With [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask houseofmackee/tap/pasted
+```
+
+This also links the `pasted` command line tool. Pasted updates itself, so `brew upgrade` leaves it alone (`brew upgrade --cask --greedy pasted` updates it through Homebrew instead), and `brew uninstall --zap --cask pasted` also removes its history and settings.
+
+Or download `Pasted-<version>-arm64.dmg` from the [releases page](https://github.com/houseofmackee/pasted/releases/latest) (Apple silicon Macs, macOS 14 or later), check it against `SHA256SUMS.txt` from the same release (`shasum -a 256 -c --ignore-missing SHA256SUMS.txt`; older releases have a `.sha256` file instead), open it and drag Pasted into Applications.
 
 From 0.3.0 on, releases are signed with a Developer ID (MacKenzie Glanzer, team `ZD5VPNGP3T`) and notarized by Apple, so Pasted opens like any other app and the Accessibility permission carries over to new versions. Check a download with `spctl -a -vv /Applications/Pasted.app` ("Notarized Developer ID") or `codesign -dr - /Applications/Pasted.app` (`certificate leaf[subject.OU] = ZD5VPNGP3T`).
 
@@ -308,7 +316,7 @@ Releases are built and published by GitHub Actions, not from a local machine. Bu
 git tag vX.Y.Z && git push origin master vX.Y.Z
 ```
 
-`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the Developer ID from the repository secrets `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`, notarizes the app and the DMG with the App Store Connect API key (`NOTARY_API_KEY_BASE64` secret; `APPLE_TEAM_ID`, `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` variables), refuses to publish anything Gatekeeper would block, writes the update feed `appcast.xml` signed with the `SPARKLE_PRIVATE_KEY` secret, and publishes the DMG, zip, `SHA256SUMS.txt` and `appcast.xml`. Locally, `scripts/dist.sh` does the same when the Developer ID is in the keychain and `PASTED_NOTARY_KEY`, `PASTED_NOTARY_KEY_ID` and `PASTED_NOTARY_ISSUER` are set. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
+`.github/workflows/release.yml` checks the tag matches `Cargo.toml`, signs with the Developer ID from the repository secrets `DEVELOPER_ID_P12_BASE64` and `DEVELOPER_ID_P12_PASSWORD`, notarizes the app and the DMG with the App Store Connect API key (`NOTARY_API_KEY_BASE64` secret; `APPLE_TEAM_ID`, `NOTARY_KEY_ID` and `NOTARY_ISSUER_ID` variables), refuses to publish anything Gatekeeper would block, writes the update feed `appcast.xml` signed with the `SPARKLE_PRIVATE_KEY` secret, publishes the DMG, zip, `SHA256SUMS.txt` and `appcast.xml`, and updates the Homebrew cask in [houseofmackee/homebrew-tap](https://github.com/houseofmackee/homebrew-tap) (with the `TAP_DEPLOY_KEY` deploy key). Locally, `scripts/dist.sh` does the same when the Developer ID is in the keychain and `PASTED_NOTARY_KEY`, `PASTED_NOTARY_KEY_ID` and `PASTED_NOTARY_ISSUER` are set. Every release is published as a pre-release; mark it as a regular release on GitHub once the manual checks in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) are done. Do not create releases by hand with `gh release create`.
 
 See [PLAN.md](PLAN.md) for the roadmap.
 

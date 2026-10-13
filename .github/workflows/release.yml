@@ -11,6 +11,8 @@ name: Release
 #   NOTARY_API_KEY_BASE64      an App Store Connect API key (.p8, Developer role)
 #   SPARKLE_PRIVATE_KEY        the EdDSA key that signs updates and appcast.xml
 #                              (Pasted's own, Keychain account "pasted")
+#   TAP_DEPLOY_KEY             a write deploy key of houseofmackee/homebrew-tap,
+#                              so the Homebrew cask follows each release
 # and these variables: APPLE_TEAM_ID, NOTARY_KEY_ID, NOTARY_ISSUER_ID.
 # Every release must be signed by the same team: the signature is what keeps
 # users' Accessibility permission across updates.
@@ -137,8 +139,35 @@ jobs:
             --title "Pasted $version" \
             dist/Pasted-$version-arm64.dmg dist/Pasted-$version-arm64.zip dist/SHA256SUMS.txt dist/appcast.xml
 
+      - name: Update the Homebrew cask
+        env:
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::warning::TAP_DEPLOY_KEY is not set; houseofmackee/homebrew-tap was not updated"
+            exit 0
+          fi
+          version="${GITHUB_REF_NAME#v}"
+          sha=$(awk '/\.dmg$/ {print $1}' dist/SHA256SUMS.txt)
+          key="$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$key"
+          chmod 600 "$key"
+          # GitHub's published host key (docs.github.com, "GitHub's SSH key fingerprints").
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          git clone -q git@github.com:houseofmackee/homebrew-tap.git "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          sed -i '' -e "s/^  version \".*\"/  version \"$version\"/" -e "s/^  sha256 \".*\"/  sha256 \"$sha\"/" Casks/pasted.rb
+          if git diff --quiet; then
+            echo "the cask is already at $version"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -am "pasted $version"
+          git push -q origin HEAD
+
       - name: Remove the temporary keychain and key
         if: always()
         run: |
           security delete-keychain "$RUNNER_TEMP/release.keychain-db" || true
-          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/sparkle_key"
+          rm -f "$RUNNER_TEMP/notary.p8" "$RUNNER_TEMP/sparkle_key" "$RUNNER_TEMP/tap_key" "$RUNNER_TEMP/known_hosts"
