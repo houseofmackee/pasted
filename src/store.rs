@@ -127,6 +127,8 @@ ALTER TABLE items ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0;
     ),
     // Smart pinboards: a saved search instead of pinned items.
     Migration::Rust(Store::add_pinboard_query),
+    // Previews of copied files, and images copied as a file now count as images.
+    Migration::Rust(Store::add_thumbnails),
 ];
 
 /// With more full text matches than this, search walks recent history in
@@ -465,6 +467,44 @@ impl Store {
         )?;
         if !exists {
             self.conn.execute_batch("ALTER TABLE pinboards ADD COLUMN query TEXT")?;
+        }
+        Ok(())
+    }
+
+    /// Migration: adds the `thumbnails` table and classifies file items
+    /// again, so images copied as a file plus image data become image items
+    /// and file reference URLs become real paths.
+    fn add_thumbnails(&mut self) -> Result<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS thumbnails (
+                 item_id INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+                 png BLOB
+             );",
+        )?;
+        let ids: Vec<i64> = {
+            let mut stmt = self.conn.prepare("SELECT id FROM items WHERE kind = 'file'")?;
+            stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?
+        };
+        let mut changed = 0;
+        for id in ids {
+            let (Some(item), Ok(reps)) = (self.get(id)?, self.representations(id)) else { continue };
+            let Some(c) = crate::clipboard::classify::classify(&reps) else { continue };
+            if c.kind == item.kind && c.meta.files == item.meta.files {
+                continue;
+            }
+            let mut meta = item.meta.clone();
+            meta.files = c.meta.files;
+            meta.width = c.meta.width;
+            meta.height = c.meta.height;
+            self.conn.execute(
+                "UPDATE items SET kind = ?2, text = ?3, meta = ?4 WHERE id = ?1",
+                params![id, c.kind.as_str(), c.text, serde_json::to_string(&meta)?],
+            )?;
+            self.reindex(id)?;
+            changed += 1;
+        }
+        if changed > 0 {
+            tracing::info!("classified {changed} file items again");
         }
         Ok(())
     }
@@ -1027,6 +1067,34 @@ impl Store {
         )?;
         let rows = stmt.query_map([limit as i64], |r| r.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    // Thumbnails
+
+    /// File items without a thumbnail attempt yet, newest first.
+    pub fn items_needing_thumbnail(&self, limit: usize) -> Result<Vec<Item>> {
+        let sql = format!(
+            "SELECT {ITEM_COLUMNS} FROM items i LEFT JOIN apps a ON a.id = i.app_id
+             WHERE i.kind = 'file' AND i.sensitive = 0 AND i.id NOT IN (SELECT item_id FROM thumbnails)
+             ORDER BY i.timestamp DESC LIMIT ?1"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map([limit as i64], item_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Stores a file item's thumbnail; `None` records that there is none.
+    pub fn set_thumbnail(&self, id: i64, png: Option<&[u8]>) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO thumbnails (item_id, png) VALUES (?1, ?2)", params![id, png])?;
+        Ok(())
+    }
+
+    pub fn thumbnail(&self, id: i64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .conn
+            .query_row("SELECT png FROM thumbnails WHERE item_id = ?1", [id], |r| r.get(0))
+            .optional()?
+            .flatten())
     }
 
     // Link previews
@@ -1703,6 +1771,58 @@ pub mod tests {
         assert_eq!(s.get(id).unwrap().unwrap().size_bytes, "Old rich text".len() as i64);
         assert_eq!(s.representations(different).unwrap().len(), 2, "UTF-16 with other text is kept");
         assert_eq!(s.insert(&with_utf16("Old rich text"), true).unwrap(), Inserted::Existing(id));
+    }
+
+    fn file_item(path: &str, extra: Vec<Representation>) -> NewItem {
+        let mut reps = vec![Representation {
+            index: 0,
+            uti: UTI_FILE_URL.into(),
+            data: format!("file://{}", path.replace(' ', "%20")).into_bytes(),
+        }];
+        reps.extend(extra);
+        let c = crate::clipboard::classify::classify(&reps).unwrap();
+        NewItem { kind: c.kind, text: c.text, meta: c.meta, representations: reps, ..text_item("file", 1_000) }
+    }
+
+    #[test]
+    fn thumbnails_are_stored_per_file_item() {
+        let (_dir, mut s) = temp_store();
+        let file = s.insert(&file_item("/tmp/clip.mp4", vec![]), true).unwrap().id();
+        s.insert(&text_item("not a file", 2_000), true).unwrap();
+        let ids: Vec<i64> = s.items_needing_thumbnail(10).unwrap().iter().map(|i| i.id).collect();
+        assert_eq!(ids, [file]);
+        assert_eq!(s.thumbnail(file).unwrap(), None);
+        s.set_thumbnail(file, Some(b"png")).unwrap();
+        assert_eq!(s.thumbnail(file).unwrap().as_deref(), Some(&b"png"[..]));
+        assert!(s.items_needing_thumbnail(10).unwrap().is_empty());
+        s.delete(file).unwrap();
+        let left: i64 = s.conn.query_row("SELECT count(*) FROM thumbnails", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn migration_turns_image_files_into_images() {
+        let (dir, mut s) = temp_store();
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&320u32.to_be_bytes());
+        png.extend_from_slice(&200u32.to_be_bytes());
+        let image = Representation { index: 0, uti: UTI_PNG.into(), data: png };
+        let shot = s.insert(&file_item("/tmp/Shot 1.png", vec![image]), true).unwrap().id();
+        let video = s.insert(&file_item("/tmp/clip.mp4", vec![]), true).unwrap().id();
+        // What older versions stored: a file item without dimensions.
+        s.conn
+            .execute("UPDATE items SET kind = 'file', meta = '{\"files\":[\"/tmp/Shot 1.png\"]}' WHERE id = ?1", [shot])
+            .unwrap();
+        let before = MIGRATIONS.iter().rposition(|m| matches!(m, Migration::Rust(_))).unwrap();
+        s.conn.pragma_update(None, "user_version", before).unwrap();
+        drop(s);
+
+        let s = Store::open(&dir.path().join("t.db"), dir.path().join("blobs")).unwrap();
+        let item = s.get(shot).unwrap().unwrap();
+        assert_eq!(item.kind, ItemKind::Image);
+        assert_eq!((item.meta.width, item.meta.height), (Some(320), Some(200)));
+        assert_eq!(item.meta.files, ["/tmp/Shot 1.png"]);
+        assert_eq!(s.get(video).unwrap().unwrap().kind, ItemKind::File);
     }
 
     #[test]

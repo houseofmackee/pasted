@@ -126,7 +126,7 @@ impl Preview {
         let inner = rect(16.0, 16.0, w - 32.0, h - 32.0);
         match (item.kind, image) {
             (ItemKind::Link, _) => link_layout(&effect, item, link.as_ref(), inner, mtm),
-            (ItemKind::Image, Some(image)) => {
+            (ItemKind::Image | ItemKind::File, Some(image)) => {
                 let iv = NSImageView::imageViewWithImage(&image, mtm);
                 iv.setImageScaling(NSImageScaling::ScaleProportionallyDown);
                 iv.setFrame(inner);

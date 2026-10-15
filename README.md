@@ -24,6 +24,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Unlimited clipboard history with a visual shelf at the bottom of the screen (default shortcut ⇧⌘V, or click the menu bar icon; right-click or Control-click the icon for its menu)
 - Click sounds when copying and pasting (on by default; Settings > General)
 - Text, rich text, links, images, files, colors and code, each with its own card; rich text keeps its formatting (from RTF, or HTML through a built-in converter that never loads remote content)
+- Copied files show a preview of their content (videos, PDFs, documents and images, made on device with Quick Look); the preview is kept even after the file is deleted
 - Instant search, with close matches for typos and abbreviations ("quartely", "gthb") after exact ones, and filters: `type:link`, `app:safari`, `device:macbook` (or `device:unknown`), `after:2025-01-01`, `before:today`, `board:work`, and negation such as `-type:image`
 - Text inside images is searchable (on-device OCR with Apple Vision)
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses

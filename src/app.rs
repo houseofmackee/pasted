@@ -500,6 +500,7 @@ pub fn run() -> Result<()> {
         dialogs::info("Settings file has an error", &format!("Using defaults until it is fixed.\n\n{e}"), mtm);
     }
     crate::ocr::spawn_worker();
+    crate::thumbnails::spawn_worker();
     crate::link_preview::spawn_worker(&LINK_PREVIEWS_ENABLED);
     crate::updates::start(mtm);
     show_welcome_once();
@@ -1264,6 +1265,12 @@ impl App {
             IMAGE_UTIS
                 .iter()
                 .find_map(|uti| self.store.representation(item.id, uti).ok().flatten())
+                .and_then(|d| NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(&d)))
+        } else if item.kind == ItemKind::File {
+            self.store
+                .thumbnail(item.id)
+                .ok()
+                .flatten()
                 .and_then(|d| NSImage::initWithData(NSImage::alloc(), &NSData::with_bytes(&d)))
         } else {
             None

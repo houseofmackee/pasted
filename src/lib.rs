@@ -29,6 +29,7 @@ pub mod sounds;
 pub mod stack;
 pub mod stats_data;
 pub mod store;
+pub mod thumbnails;
 pub mod transform;
 pub mod ui;
 pub mod updates;

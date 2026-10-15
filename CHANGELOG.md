@@ -7,6 +7,19 @@ the update window and the GitHub release show.
 
 ## [Unreleased]
 
+### Added
+
+- Cards for copied files show a preview of the content: a frame of a
+  video, the first page of a PDF or document. Previews are made on your
+  Mac with Quick Look and kept even after the file is deleted.
+
+### Fixed
+
+- Screenshots and images copied together with their file (CleanShot,
+  browsers and others) show as images instead of a file icon.
+  Existing items are updated on first launch.
+- Files copied in Finder as file references show their real name and path.
+
 ### Changed
 
 - The update window shows what changed in the new version, taken from this

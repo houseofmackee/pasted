@@ -428,13 +428,17 @@ impl Shelf {
     }
 
     fn image_for(&mut self, item: &Item, store: &Store) -> Option<Retained<NSImage>> {
-        if item.kind != ItemKind::Image {
+        if !matches!(item.kind, ItemKind::Image | ItemKind::File) {
             return None;
         }
         if let Some(img) = self.images.get(&item.id) {
             return Some(img.clone());
         }
-        let data = IMAGE_UTIS.iter().find_map(|uti| store.representation(item.id, uti).ok().flatten())?;
+        let data = if item.kind == ItemKind::File {
+            store.thumbnail(item.id).ok().flatten()?
+        } else {
+            IMAGE_UTIS.iter().find_map(|uti| store.representation(item.id, uti).ok().flatten())?
+        };
         let img = NSImage::initWithData(NSImage::alloc(), &objc2_foundation::NSData::with_bytes(&data))?;
         if self.images.len() > 400 {
             self.images.clear();

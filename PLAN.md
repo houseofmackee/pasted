@@ -31,6 +31,7 @@ Pasted is a native macOS clipboard manager written in Rust, modeled on [Paste](h
 | Storage | SQLite via `rusqlite` (bundled, FTS5 enabled) | Single file, WAL mode, full text search. |
 | Large blobs | Content-addressed files under `~/Library/Application Support/Pasted/blobs/` | Keeps DB small; dedupe by SHA-256. |
 | OCR | Apple Vision (`VNRecognizeTextRequest`) via `objc2-vision` | On-device, matches Paste's image text search. |
+| File previews | QuickLookThumbnailing (`QLThumbnailGenerator`) via `objc2-quick-look-thumbnailing` | Thumbnails of videos, PDFs and documents for file cards, stored in the database. |
 | Settings | `serde` + TOML file, mirrored to an in-memory struct | Human-editable, easy to export/import. |
 | Import decoding | `plist`, `flate2`, `lzfse` crates | Paste stores data as JSON, deflate, LZFSE and binary plists (see section 6). |
 | Logging | `tracing` + `tracing-oslog` | Shows up in Console.app. |
@@ -64,6 +65,7 @@ src/
     query.rs           query parser (text + filters like type:, app:, before:)
     fts.rs             FTS5 queries, ranking
     ocr.rs             Vision OCR worker queue
+    thumbnails.rs      Quick Look thumbnail worker for file items
   ui/
     shelf.rs           bottom panel (NSPanel), horizontal card strip
     card.rs            card rendering per item type
@@ -93,6 +95,7 @@ Threading: the main thread owns AppKit. Clipboard capture runs on the main run l
 - `apps(id, bundle_id, name, icon_png)`.
 - `items_fts` (FTS5 over title, text, OCR text, URL, app name).
 - `ocr(item_id, text, confidence)`.
+- `thumbnails(item_id, png)`: Quick Look preview of a file item (NULL when there is none).
 - `import_runs(id, source, started_at, finished_at, items_imported, items_skipped)` for idempotent re-import.
 
 ## 4. Feature list

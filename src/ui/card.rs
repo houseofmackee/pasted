@@ -286,17 +286,26 @@ pub fn build(content: CardContent, icons: &mut IconCache, mtm: MainThreadMarker)
             card.addSubview(&hex);
         }
         ItemKind::File => {
-            if let Some(first) = item.meta.files.first() {
-                let iv = NSImageView::imageViewWithImage(&IconCache::file_icon(first), mtm);
+            // A Quick Look thumbnail fills the card (the footer names the
+            // file); without one, the file's icon and up to three names.
+            if let Some(thumb) = &content.image {
+                let iv = NSImageView::imageViewWithImage(thumb, mtm);
                 iv.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
-                iv.setFrame(rect(PAD, top(body_y + 4.0, 100.0), w - PAD * 2.0, 100.0));
+                iv.setFrame(body);
                 card.addSubview(&iv);
+            } else {
+                if let Some(first) = item.meta.files.first() {
+                    let iv = NSImageView::imageViewWithImage(&IconCache::file_icon(first), mtm);
+                    iv.setImageScaling(NSImageScaling::ScaleProportionallyUpOrDown);
+                    iv.setFrame(rect(PAD, top(body_y + 4.0, 100.0), w - PAD * 2.0, 100.0));
+                    card.addSubview(&iv);
+                }
+                let names: Vec<&str> = item.meta.files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect();
+                let l = wrapping_label(&names.join("\n"), &NSFont::systemFontOfSize(12.0), 3, mtm);
+                l.setAlignment(NSTextAlignment::Center);
+                l.setFrame(rect(PAD, top(body_y + 110.0, body_h - 110.0), w - PAD * 2.0, body_h - 110.0));
+                card.addSubview(&l);
             }
-            let names: Vec<&str> = item.meta.files.iter().map(|f| f.rsplit('/').next().unwrap_or(f)).collect();
-            let l = wrapping_label(&names.join("\n"), &NSFont::systemFontOfSize(12.0), 3, mtm);
-            l.setAlignment(NSTextAlignment::Center);
-            l.setFrame(rect(PAD, top(body_y + 110.0, body_h - 110.0), w - PAD * 2.0, body_h - 110.0));
-            card.addSubview(&l);
         }
         ItemKind::Link => {
             let preview = content.link.as_ref();

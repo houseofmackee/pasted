@@ -59,9 +59,22 @@ pub fn file_urls(reps: &[Representation]) -> Vec<String> {
 }
 
 pub fn file_url_to_path(url: &str) -> Option<String> {
+    if url.starts_with("file:///.file/id=")
+        && let Some(path) = resolve_file_reference(url)
+    {
+        return Some(path);
+    }
     let rest = url.strip_prefix("file://")?;
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
     Some(percent_decode(rest))
+}
+
+/// The real path of a file reference URL (`file:///.file/id=...`, which
+/// Finder and some apps copy), while the file still exists.
+fn resolve_file_reference(url: &str) -> Option<String> {
+    use objc2_foundation::{NSString, NSURL};
+    let url = NSURL::URLWithString(&NSString::from_str(url))?;
+    Some(url.filePathURL()?.path()?.to_string())
 }
 
 fn percent_decode(s: &str) -> String {
@@ -221,15 +234,24 @@ pub fn classify(reps: &[Representation]) -> Option<Classified> {
     }
     let mut meta = ItemMeta::default();
 
+    let image = IMAGE_UTIS.iter().find_map(|u| get(reps, u));
     let files = file_urls(reps);
     if !files.is_empty() {
         let text = files.join("\n");
         meta.files = files;
+        // Screenshot tools and browsers copy an image as its file plus the
+        // image data: show it as an image, keep the file for pasting.
+        if let Some(image) = image {
+            if let Some((w, h)) = image_dimensions(&image.data) {
+                meta.width = Some(w);
+                meta.height = Some(h);
+            }
+            return Some(Classified { kind: ItemKind::Image, text, meta });
+        }
         return Some(Classified { kind: ItemKind::File, text, meta });
     }
 
     let text = plain_text(reps);
-    let image = IMAGE_UTIS.iter().find_map(|u| get(reps, u));
 
     match text {
         Some(text) if !text.trim().is_empty() => {
@@ -337,6 +359,34 @@ mod tests {
         .unwrap();
         assert_eq!(c.kind, ItemKind::File);
         assert_eq!(c.meta.files, vec!["/Users/me/My File.txt", "/tmp/b.png"]);
+    }
+
+    #[test]
+    fn image_file_is_an_image() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&800u32.to_be_bytes());
+        png.extend_from_slice(&600u32.to_be_bytes());
+        let c = classify(&[
+            Representation { index: 0, uti: UTI_FILE_URL.into(), data: b"file:///tmp/Shot%201.png".to_vec() },
+            rep(UTI_PNG, &png),
+        ])
+        .unwrap();
+        assert_eq!(c.kind, ItemKind::Image);
+        assert_eq!((c.meta.width, c.meta.height), (Some(800), Some(600)));
+        assert_eq!(c.meta.files, vec!["/tmp/Shot 1.png"]);
+        assert_eq!(c.text, "/tmp/Shot 1.png");
+    }
+
+    #[test]
+    fn file_reference_urls_resolve() {
+        use objc2_foundation::{NSString, NSURL};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().canonicalize().unwrap().join("note.txt");
+        std::fs::write(&path, "hi").unwrap();
+        let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()));
+        let reference = url.fileReferenceURL().unwrap().absoluteString().unwrap().to_string();
+        assert!(reference.starts_with("file:///.file/id="), "{reference}");
+        assert_eq!(file_url_to_path(&reference).as_deref(), path.to_str());
     }
 
     #[test]

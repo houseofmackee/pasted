@@ -33,6 +33,16 @@ objc2-core-foundation = "0.3"
 objc2-core-graphics = "0.3"
 objc2-foundation = "0.3"
 objc2-quartz-core = "0.3"
+objc2-quick-look-thumbnailing = { version = "0.3", default-features = false, features = [
+    "std",
+    "bitflags",
+    "block2",
+    "objc2-core-foundation",
+    "objc2-core-graphics",
+    "QLThumbnailGenerationRequest",
+    "QLThumbnailGenerator",
+    "QLThumbnailRepresentation",
+] }
 objc2-service-management = "0.3"
 objc2-vision = "0.3"
 percent-encoding = "2"
