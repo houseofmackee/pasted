@@ -49,7 +49,7 @@ percent-encoding = "2"
 plist = "1"
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 regex = "1"
-rusqlite = { version = "0.37", features = ["bundled-sqlcipher"] }
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
 security-framework = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
