@@ -7,6 +7,8 @@ the update window and the GitHub release show.
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-01
+
 ### Fixed
 
 - "Remove tracking parameters from links" now also works for a plain
@@ -111,7 +113,8 @@ text, Paste As cleanups, snippet placeholders, rules, a Paste Stack,
 statistics, export and backups, optional encryption at rest, a read-only
 MCP server for AI tools, VoiceOver support, and importing from Paste.
 
-[Unreleased]: https://github.com/houseofmackee/pasted/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/houseofmackee/pasted/compare/v0.3.4...HEAD
+[0.3.4]: https://github.com/houseofmackee/pasted/compare/v0.3.3...v0.3.4
 [0.3.3]: https://github.com/houseofmackee/pasted/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/houseofmackee/pasted/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/houseofmackee/pasted/compare/v0.3.0...v0.3.1
