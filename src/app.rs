@@ -832,18 +832,21 @@ impl App {
         }
         let max = (self.settings.general.max_item_size_mb as usize).saturating_mul(1024 * 1024);
         match capture(&self.pasteboard, &self.filter, max, self.device.as_deref()) {
-            Capture::Item(item) => match self.store.insert(&item, true) {
-                Ok(inserted) => {
-                    tracing::debug!("captured {:?} item {inserted:?}", item.kind);
-                    self.apply_rules(inserted.id(), &item);
-                    self.push_stack(inserted.id());
-                    self.play(Sound::Copy);
-                    if self.shelf.is_visible() && self.shelf.board.is_none() {
-                        self.shelf.reload(&self.store);
+            Capture::Item(mut item) => {
+                self.clean_copied_link(&mut item, cc);
+                match self.store.insert(&item, true) {
+                    Ok(inserted) => {
+                        tracing::debug!("captured {:?} item {inserted:?}", item.kind);
+                        self.apply_rules(inserted.id(), &item);
+                        self.push_stack(inserted.id());
+                        self.play(Sound::Copy);
+                        if self.shelf.is_visible() && self.shelf.board.is_none() {
+                            self.shelf.reload(&self.store);
+                        }
                     }
+                    Err(e) => tracing::error!("saving clip failed: {e:#}"),
                 }
-                Err(e) => tracing::error!("saving clip failed: {e:#}"),
-            },
+            }
             Capture::Sensitive(item, reason, ms) => match self.store.insert(&item, true) {
                 Ok(inserted) => {
                     // Rules never pin sensitive items; they only live until the deadline.
@@ -863,6 +866,22 @@ impl App {
             Capture::Ignored(reason) => tracing::info!("not saved: {reason:?}"),
             Capture::TooLarge(n) => tracing::info!("not saved: {n} bytes exceeds the size limit"),
             Capture::Empty => {}
+        }
+    }
+
+    /// With link cleanup on, a copied link with tracking parameters is put
+    /// back on the clipboard without them, so pasting it anywhere (not only
+    /// from the shelf) gives the clean link.
+    fn clean_copied_link(&mut self, item: &mut crate::model::NewItem, cc: isize) {
+        // Skipped if another copy arrived meanwhile, so it is not overwritten.
+        if !self.settings.pasting.clean_links || self.pasteboard.changeCount() != cc {
+            return;
+        }
+        if crate::clipboard::capture::strip_link_tracking(item) {
+            let cc = pasteboard::write(&self.pasteboard, &item.representations);
+            self.own_change = Some(cc);
+            self.last_change = cc;
+            tracing::debug!("removed tracking parameters from a copied link");
         }
     }
 

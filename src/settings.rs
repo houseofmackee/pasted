@@ -183,6 +183,7 @@ impl Default for Privacy {
 #[serde(default)]
 pub struct Pasting {
     pub trim_whitespace: bool,
+    /// Also applied when a link is copied: the clipboard gets the clean link.
     pub clean_links: bool,
     /// Expand `{date}`, `{cursor}`, `{input:Name}` and other placeholders in
     /// pinboard items. History items are never expanded.

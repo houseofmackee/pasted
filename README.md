@@ -29,7 +29,7 @@ Everything stays on your Mac: no accounts and no telemetry, with optional encryp
 - Text inside images is searchable (on-device OCR with Apple Vision)
 - Link previews with page title, image and site icon, also searchable; only public http(s) URLs are fetched, never local or private network addresses
 - Paste As (⌥Return or right-click): case changes, trimming, single line, tracking-free links, pretty or minified JSON, sorted or unique lines, URL encoding, and Markdown as formatted text; only options that change the text are shown
-- Optional automatic cleanup on every paste: trim whitespace and remove link tracking parameters (both off by default)
+- Optional automatic cleanup (both off by default): trim whitespace on paste, and remove link tracking parameters; a copied link is cleaned on the clipboard right away, so a plain ⌘V in any app pastes it clean
 - Snippet placeholders in pinboard items, expanded when pasting (see below)
 - Rules that expire or pin new copies automatically (see below)
 - Statistics window: items added per day and by time of day, types, top apps, most pasted items and devices, over 7, 30 or 90 days, for all devices or one, in light and dark mode; a Table view and Copy Data give the exact numbers for a spreadsheet
@@ -283,7 +283,7 @@ refuse_pinning_sensitive = false   # true: kept sensitive items cannot be pinned
 
 [pasting]                       # automatic cleanup on paste, off by default
 trim_whitespace = false
-clean_links = false
+clean_links = false             # also cleans links on the clipboard when they are copied
 expand_placeholders = true      # snippets on pinboards only
 
 [import]                        # optional privacy checks for imports, all off by default

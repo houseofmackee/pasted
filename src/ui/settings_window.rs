@@ -341,11 +341,16 @@ impl Form {
         self.view.addSubview(view);
     }
 
+    /// A wrapped note, as tall as its text (at least three lines, so notes
+    /// whose text is set later have room).
     fn note(&mut self, text: &str, x: f64) -> Retained<NSTextField> {
-        let l = wrapping_label(text, &NSFont::systemFontOfSize(11.0), 3, self.mtm);
+        let l = wrapping_label(text, &NSFont::systemFontOfSize(11.0), 0, self.mtm);
         l.setTextColor(Some(&NSColor::secondaryLabelColor()));
-        let y = self.row("", 44.0);
-        l.setFrame(rect(x, y, W - 80.0 - x, 44.0));
+        let width = W - 80.0 - x;
+        l.setPreferredMaxLayoutWidth(width);
+        let height = l.fittingSize().height.ceil().max(44.0);
+        let y = self.row("", height);
+        l.setFrame(rect(x, y, width, height));
         self.add(&l);
         l
     }
@@ -486,7 +491,8 @@ impl SettingsWindow {
             CONTROL_X,
         );
         f.note(
-            "Automatic cleanup applies to plain text and links; formatted text keeps its formatting. For one-off \
+            "Automatic cleanup applies to plain text and links; formatted text keeps its formatting. A copied link \
+             loses its tracking parameters right away, so \u{2318}V pastes it clean in any app. For one-off \
              changes, press \u{2325}Return in the shelf or right-click a card and choose Paste As.",
             CONTROL_X,
         );

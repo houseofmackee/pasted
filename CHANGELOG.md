@@ -7,6 +7,13 @@ the update window and the GitHub release show.
 
 ## [Unreleased]
 
+### Fixed
+
+- "Remove tracking parameters from links" now also works for a plain
+  Cmd-V in any app, not only when pasting from the shelf: a copied link
+  is put back on the clipboard without its tracking parameters.
+- Notes in Settings are no longer cut off after three lines.
+
 ## [0.3.3] - 2026-10-15
 
 ### Added
